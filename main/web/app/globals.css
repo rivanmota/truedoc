@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+/*
+  Design tokens
+  -------------
+  Palette named for what it is, not what it's for: this is an
+  instrument-readout aesthetic (dark panel, hairline dividers, mono
+  data) rather than a marketing page. The two signal colors
+  (real / ai) are the only saturated colors on the page — everything
+  else stays graphite so the verdict color is what carries meaning.
+*/
+:root {
+  --ink: #0d0f13;         /* page background */
+  --panel: #171a21;       /* card/panel surface */
+  --panel-raised: #1e222b;
+  --line: #2b2f3a;        /* hairline borders/dividers */
+  --paper: #edeef2;       /* primary text */
+  --dim: #868c9c;         /* secondary text */
+  --dimmer: #565c6b;      /* tertiary / disabled text */
+
+  --signal-real: #4fd1a5;  /* "likely real" */
+  --signal-ai: #f0954b;    /* "likely ai-generated" */
+  --signal-mid: #e8c547;   /* inconclusive zone accent */
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-panel: var(--panel);
+  --color-panel-raised: var(--panel-raised);
+  --color-line: var(--line);
+  --color-paper: var(--paper);
+  --color-dim: var(--dim);
+  --color-dimmer: var(--dimmer);
+  --color-signal-real: var(--signal-real);
+  --color-signal-ai: var(--signal-ai);
+  --color-signal-mid: var(--signal-mid);
+
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+}
+
+* {
+  border-color: var(--line);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-body);
+}
+
+/* Visible keyboard focus everywhere, styled to the palette instead of
+   the browser default blue. */
+:focus-visible {
+  outline: 2px solid var(--signal-real);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@keyframes ring-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.94);
+  }
+  70% {
+    opacity: 0.05;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+}
+
+.animate-ring-pulse {
+  animation: ring-pulse 2.1s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+  transform-origin: center;
+}
