@@ -27,9 +27,14 @@ Thumbs.db
 *.log
 
 # Node / Next.js (web UI)
-web/node_modules/
-web/.next/
-web/out/
+main/web/node_modules/
+main/web/.next/
+main/web/out/
 
 # Docker
 *.pid
+
+# Hidden folders
+.junie/
+.git/
+.*/
