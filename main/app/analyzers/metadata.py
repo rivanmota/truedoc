@@ -38,14 +38,39 @@ KNOWN_GENERATOR_SOFTWARE = [
 ]
 
 
+EXIF_SUB_IFD_TAG = 0x8769  # "ExifOffset" — pointer from IFD0 to the Exif sub-IFD
+
+
 def _get_exif(img: Image.Image) -> dict:
+    """
+    Flatten the image's EXIF into one ``{tag_name: value}`` dict.
+
+    Pillow's ``getexif()`` only exposes IFD0 directly (Make, Model,
+    Software, Orientation, ...). The exposure-related tags a camera
+    writes — FNumber, ExposureTime, ISOSpeedRatings, DateTimeOriginal —
+    live in the Exif sub-IFD (tag 0x8769), so that has to be merged in
+    too, otherwise a genuine camera photo only ever surfaces Make/Model
+    and never looks "plausible" to the camera-EXIF check below.
+
+    IFD0 wins on a key collision (there shouldn't be one in a
+    well-formed file). A corrupt sub-IFD is ignored rather than
+    discarding the IFD0 data alongside it.
+    """
     try:
         raw = img.getexif()
         if not raw:
             return {}
-        return {TAGS.get(k, k): v for k, v in raw.items()}
+        merged = {TAGS.get(k, k): v for k, v in raw.items()}
     except Exception:
         return {}
+
+    try:
+        sub_ifd = raw.get_ifd(EXIF_SUB_IFD_TAG)
+    except Exception:
+        sub_ifd = {}
+    for k, v in sub_ifd.items():
+        merged.setdefault(TAGS.get(k, k), v)
+    return merged
 
 
 def _scan_png_text_chunks(img: Image.Image) -> list[str]:

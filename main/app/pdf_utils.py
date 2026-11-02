@@ -9,11 +9,43 @@ from __future__ import annotations
 
 import io
 
+import numpy as np
 import pypdfium2 as pdfium
 
 MAX_PAGES = 20
 MAX_EMBEDDED_IMAGES_PER_PAGE = 64
 MAX_EXTRACT_DIM = 4096
+
+
+RASTER_STATS_MAX_PIXELS = 1_000_000
+
+
+def raster_stats(pil_image, max_pixels: int = RASTER_STATS_MAX_PIXELS) -> dict:
+    """Cheap content statistics used by the scoring layer to recognise flat
+    or gradient fills (banners, vignettes, solid blocks) that are not
+    photographs: ``unique_colors`` (distinct RGB triples) and
+    ``edge_density`` (fraction of pixels whose neighbour differs by more
+    than 8 gray levels). Large rasters are strided down to ~``max_pixels``.
+    """
+    arr = np.asarray(pil_image.convert("RGB"))
+    h, w = arr.shape[:2]
+    if h == 0 or w == 0:
+        return {"unique_colors": 0, "edge_density": 0.0}
+    step = max(1, int(np.ceil(np.sqrt((h * w) / max_pixels))))
+    sub = arr[::step, ::step]
+    packed = (
+        (sub[..., 0].astype(np.uint32) << 16)
+        | (sub[..., 1].astype(np.uint32) << 8)
+        | sub[..., 2].astype(np.uint32)
+    )
+    unique_colors = int(np.unique(packed).size)
+    gray = sub.astype(np.float32).mean(axis=2)
+    if gray.shape[0] < 2 or gray.shape[1] < 2:
+        return {"unique_colors": unique_colors, "edge_density": 0.0}
+    dx = np.abs(np.diff(gray, axis=1))[:-1, :]
+    dy = np.abs(np.diff(gray, axis=0))[:, :-1]
+    edge_density = float((np.maximum(dx, dy) > 8.0).mean())
+    return {"unique_colors": unique_colors, "edge_density": round(edge_density, 4)}
 
 
 def _safe_area(bounds, page_width: float, page_height: float) -> float:
@@ -168,6 +200,7 @@ def _extract_embedded_images(page, page_number: int) -> list[dict]:
                     "page_coverage": round(float(page_coverage), 6),
                     "bounds": [round(float(v), 2) for v in bounds],
                     "filters": filters,
+                    **raster_stats(pil_image),
                 },
             })
         except Exception:
@@ -200,6 +233,7 @@ def render_pdf_pages_with_profiles(pdf_bytes: bytes, dpi: int = 200) -> list[dic
                     pil_image = bitmap.to_pil().convert("RGB")
                     buf = io.BytesIO()
                     pil_image.save(buf, format="PNG")
+                    profile.update(raster_stats(pil_image))
                 finally:
                     try:
                         bitmap.close()
