@@ -20,7 +20,10 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="h-full">
-      <body className="min-h-full flex flex-col bg-ink text-paper antialiased">
+      <body
+        className="min-h-full flex flex-col bg-ink text-paper antialiased"
+        suppressHydrationWarning
+      >
         {children}
       </body>
     </html>

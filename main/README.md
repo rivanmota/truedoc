@@ -31,6 +31,25 @@ network, not over `localhost`, so nothing needs configuring.
 - `./run.sh -d` — same, but detached (background)
 - `./run.sh down` — stop and remove both containers
 
+## Local development (without Docker)
+
+Prerequisites: **Python 3.12+** and **Node 22+**.
+
+```bash
+./init.sh
+```
+
+This installs `libgl1`/`libglib2.0-0` via `apt-get` if missing and
+`apt-get` is available (needed by `opencv-python-headless` at import
+time, as in `Dockerfile`), sets up (or reuses) a `.venv`, installs
+`requirements.txt`, installs `web/node_modules` if missing, then
+starts the API (`uvicorn app.main:app --reload`) on
+**http://localhost:8008** and the UI (`next dev`) on
+**http://localhost:3000** — no containers, no image builds, with hot
+reload on both sides. Press `Ctrl-C` to stop both.
+
+`./run.sh` remains available as the Docker-based alternative.
+
 ## Run just the API
 
 ```bash
