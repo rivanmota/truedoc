@@ -1,43 +1,74 @@
 export type Verdict = "real" | "inconclusive" | "ai";
 
+/**
+ * Verdict bands for the not-true-doc likelihood (0..1). Exported so the
+ * gauge, the legend, and any future copy all read from one place.
+ *
+ *   score <  REAL_MAX            -> "real"          (likely a true doc)
+ *   REAL_MAX <= score <= AI_MIN  -> "inconclusive"
+ *   score >  AI_MIN              -> "ai"            (likely not a true doc)
+ */
+export const VERDICT_THRESHOLDS = {
+  REAL_MAX: 0.35,
+  AI_MIN: 0.65,
+} as const;
+
 export function verdictFor(score: number): Verdict {
-  if (score < 0.35) return "real";
-  if (score > 0.65) return "ai";
+  if (score < VERDICT_THRESHOLDS.REAL_MAX) return "real";
+  if (score > VERDICT_THRESHOLDS.AI_MIN) return "ai";
   return "inconclusive";
 }
 
+/**
+ * The score is the likelihood that the file is NOT a true document — i.e.
+ * that its visual content was AI-generated or AI-manipulated. Labels are
+ * phrased against that framing so a low number reads as "true doc" and a
+ * high number reads as "not a true doc".
+ */
 export const VERDICT_LABEL: Record<Verdict, string> = {
-  real: "Likely real",
+  real: "Likely a true doc",
   inconclusive: "Inconclusive",
-  ai: "Likely AI-generated",
+  ai: "Likely not a true doc",
 };
 
-function hexToRgb(hex: string): [number, number, number] {
-  const clean = hex.replace("#", "");
-  return [
-    parseInt(clean.slice(0, 2), 16),
-    parseInt(clean.slice(2, 4), 16),
-    parseInt(clean.slice(4, 6), 16),
-  ];
+/** Qualitative level of the not-true-doc likelihood — shown instead of a number. */
+export const LIKELIHOOD_LEVEL: Record<Verdict, string> = {
+  real: "Low",
+  inconclusive: "Moderate",
+  ai: "High",
+};
+
+/** Short labels for the three-segment verdict scale. */
+export const VERDICT_SHORT: Record<Verdict, string> = {
+  real: "True doc",
+  inconclusive: "Inconclusive",
+  ai: "Not a true doc",
+};
+
+/** Solid colour per verdict band (CSS variable references). */
+export const VERDICT_COLOR: Record<Verdict, string> = {
+  real: "var(--signal-real)",
+  inconclusive: "var(--signal-mid)",
+  ai: "var(--signal-ai)",
+};
+
+/** Per-signal verdict: the same bands, plus "na" for signals that didn't apply. */
+export type SignalVerdict = Verdict | "na";
+
+export function signalVerdictFor(score: number | null | undefined): SignalVerdict {
+  if (typeof score !== "number" || !Number.isFinite(score)) return "na";
+  return verdictFor(score);
 }
 
-const REAL_RGB = hexToRgb("#4fd1a5");
-const MID_RGB = hexToRgb("#e8c547");
-const AI_RGB = hexToRgb("#f0954b");
+/** How a single signal reads, phrased as evidence for/against a true doc. */
+export const SIGNAL_VERDICT_LABEL: Record<SignalVerdict, string> = {
+  real: "Consistent with a true doc",
+  inconclusive: "Inconclusive on its own",
+  ai: "Points away from a true doc",
+  na: "Not applicable to this file",
+};
 
-function lerp(a: number, b: number, t: number): number {
-  return Math.round(a + (b - a) * t);
-}
-
-/** Interpolates real -> mid -> ai across a 0-1 score for a bar/ring fill color. */
-export function scoreColor(score: number): string {
-  const clamped = Math.min(1, Math.max(0, score));
-  const [from, to, t] =
-    clamped < 0.5
-      ? [REAL_RGB, MID_RGB, clamped / 0.5]
-      : [MID_RGB, AI_RGB, (clamped - 0.5) / 0.5];
-  const r = lerp(from[0], to[0], t);
-  const g = lerp(from[1], to[1], t);
-  const b = lerp(from[2], to[2], t);
-  return `rgb(${r} ${g} ${b})`;
-}
+export const SIGNAL_VERDICT_COLOR: Record<SignalVerdict, string> = {
+  ...VERDICT_COLOR,
+  na: "var(--dimmer)",
+};

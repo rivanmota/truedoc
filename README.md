@@ -26,6 +26,9 @@ truedoc/
     score low on `ai_generated`).
   - `baseline/png/ai-generated.png` — a fully AI-generated image
     (expected to score high).
+  - `baseline/png/fireplace-generated.png` — a fully AI-generated
+    non-portrait scene (expected to score high; no face, so it is
+    scored by the noise and frequency signals).
   - `baseline/png/ai-retouched.png` — a real photo with AI retouching
     (expected to land in between).
   - `baseline/pdf/baseline_sample.pdf` — a plain, unremarkable PDF.

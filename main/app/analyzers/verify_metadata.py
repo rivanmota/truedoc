@@ -243,13 +243,28 @@ class TestAnalyzeExifSoftwareTag(MetadataTestCase):
         self.assertIn("explicit generator metadata found", result["note"])
 
     def test_every_listed_generator_name_is_detected(self):
+        # EXIF Software is an ASCII field; non-ASCII names ("dall·e") cannot
+        # be stored in it and are covered through PNG text chunks.
         for name in KNOWN_GENERATOR_SOFTWARE:
             with self.subTest(name=name):
-                result = analyze(make_image("JPEG", exif={Tag.Software: name}))
+                if name.isascii():
+                    result = analyze(make_image("JPEG", exif={Tag.Software: name}))
+                    expected = f"EXIF Software tag references '{name}'"
+                else:
+                    result = analyze(make_image("PNG", png_text={"Software": name}))
+                    expected = f"PNG text chunk 'Software' references '{name}'"
                 self.assertImageSignature(result)
-                self.assertIn(f"EXIF Software tag references '{name}'", result["signature_hits"])
+                self.assertIn(expected, result["signature_hits"])
 
-    def test_matching_is_case_insensitive_and_substring_based(self):
+    def test_ordinary_words_are_not_generator_names(self):
+        for software in ("Reflux Imaging 2.1", "InfluxData Grafana export",
+                         "Firefly Print Server", "Dallesandro Photo", "Fluxus"):
+            with self.subTest(software=software):
+                result = analyze(make_image("JPEG", exif={Tag.Software: software}))
+                self.assertNotEqual(result["confidence"], "high")
+                self.assertNotIn("signature_hits", result)
+
+    def test_matching_is_case_insensitive_and_whole_token_based(self):
         cases = [
             ("MIDJOURNEY", "midjourney"),
             ("MidJourney", "midjourney"),
@@ -263,19 +278,13 @@ class TestAnalyzeExifSoftwareTag(MetadataTestCase):
                 self.assertImageSignature(result)
                 self.assertIn(f"EXIF Software tag references '{expected_name}'", result["signature_hits"])
 
-    def test_overlapping_list_entries_each_produce_a_hit(self):
-        # "adobe firefly" and "firefly" are both listed; the substring check
-        # fires once per entry rather than collapsing them. Pin that so a
-        # future de-dup is a deliberate change, not an accident.
+    def test_product_name_produces_exactly_one_hit(self):
+        # Deliberate change (this test used to pin two hits, for "adobe
+        # firefly" and the bare word "firefly"): bare "firefly" is no longer
+        # a generator term, so the product name yields one hit.
         result = analyze(make_image("JPEG", exif={Tag.Software: "Adobe Firefly"}))
         self.assertImageSignature(result)
-        self.assertEqual(
-            result["signature_hits"],
-            [
-                "EXIF Software tag references 'adobe firefly'",
-                "EXIF Software tag references 'firefly'",
-            ],
-        )
+        self.assertEqual(result["signature_hits"], ["EXIF Software tag references 'adobe firefly'"])
 
     def test_software_tag_on_png_exif_chunk_is_detected(self):
         # PNG can carry EXIF via an eXIf chunk; the Software check is not
@@ -518,8 +527,8 @@ class TestAnalyzePngTextChunks(MetadataTestCase):
             result["signature_hits"],
             [
                 "PNG text chunk 'parameters' present (generator metadata)",
-                "PNG text chunk 'parameters' references 'stable diffusion'",
                 "PNG text chunk 'parameters' references 'automatic1111'",
+                "PNG text chunk 'parameters' references 'stable diffusion'",
             ],
         )
 
@@ -826,10 +835,20 @@ class TestAnalyzePdfDocument(MetadataTestCase):
         self.assertEqual(
             result["signature_hits"],
             [
-                "PDF metadata field 'Subject' references 'midjourney'",
                 "PDF metadata field 'Subject' references 'ideogram'",
+                "PDF metadata field 'Subject' references 'midjourney'",
             ],
         )
+
+    def test_ordinary_words_are_not_provenance(self):
+        for fields in ({"Title": "Flux de tresorerie 2024"},
+                       {"Subject": "Pose de dalles - reflux - InfluxData export"},
+                       {"Author": "Maria Dallesandro"},
+                       {"Producer": "Firefly Print Server"}):
+            with self.subTest(fields=fields):
+                result = analyze_pdf_document(fields)
+                self.assertEqual(result["confidence"], "low")
+                self.assertEqual(result["score"], NEUTRAL_SCORE)
 
     def test_non_string_values_are_coerced_not_crashed(self):
         # pdf_utils promises str values, but be defensive: None/ints must
@@ -878,7 +897,9 @@ class TestImageVsPdfWeighting(MetadataTestCase):
         # A name added for one path must be honoured by the other.
         for name in KNOWN_GENERATOR_SOFTWARE:
             with self.subTest(name=name):
-                self.assertEqual(analyze(make_image("JPEG", exif={Tag.Software: name}))["confidence"], "high")
+                image = (make_image("JPEG", exif={Tag.Software: name}) if name.isascii()
+                         else make_image("PNG", png_text={"Software": name}))
+                self.assertEqual(analyze(image)["confidence"], "high")
                 self.assertEqual(analyze_pdf_document({"Title": name})["confidence"], "high")
 
 

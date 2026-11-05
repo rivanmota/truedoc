@@ -64,21 +64,40 @@ from app.analyzers import (
     pdf_signatures,
     pdf_structure,
 )
+from app import context as image_context_module
 from app import pdf_utils
 
 app = FastAPI(title="Local AI Image Detector", version="0.3.4")
 
-# Weights across the four visual signals (metadata is handled
-# separately since a signature hit should dominate the score
-# outright, not just average in).
-WEIGHTS = {
-    "frequency": 0.05,
-    "noise": 0.45,
-    "gradients": 0.35,
-    "lighting": 0.15,
-}
+# The combiner lives in app/scoring.py so the PDF path can share it; these
+# names are kept for existing callers (tests, eval/calibrate_weights.py).
+from app.scoring import (  # noqa: E402,F401
+    CONFIDENCE_FACTOR,
+    GRADIENT_FALLBACK_SIGNALS,
+    NO_EVIDENCE_SCORE,
+    SINGLE_SIGNAL_CAP,
+    SUBSTANTIVE_SIGNALS,
+    WEIGHTS,
+    _DEFAULT_MODEL,
+)
+from app.scoring import combine as _combine  # noqa: E402
+from app.scoring import signal_applicable as _signal_applicable  # noqa: E402
+from app.scoring import visual_score as _visual_score  # noqa: E402
 
-MAX_DIM = 1536  # downscale very large images for speed; doesn't affect the signals materially
+_SCORING_REEXPORTS = (
+    CONFIDENCE_FACTOR, GRADIENT_FALLBACK_SIGNALS, NO_EVIDENCE_SCORE, SINGLE_SIGNAL_CAP,
+    SUBSTANTIVE_SIGNALS, WEIGHTS, _signal_applicable,
+)
+
+# Geometry-level signals (gradients, lighting) run on a copy downscaled to
+# at most MAX_DIM on the long side; that only changes scale, not what they
+# measure.
+MAX_DIM = 1536
+# Pixel-level signals (noise, frequency) must see the file's own pixels:
+# downscaling averages grain away and pushes an upscaling knee past
+# Nyquist. They run on a native-resolution centre crop of at most
+# NATIVE_CROP x NATIVE_CROP to bound FFT cost.
+NATIVE_CROP = 2048
 
 SUPPORTED_FORMATS = "png, jpg/jpeg, pdf"
 
@@ -95,65 +114,97 @@ def _detect_format(data: bytes) -> str:
     return "unknown"
 
 
-def _load_image(image_bytes: bytes) -> tuple[np.ndarray, np.ndarray]:
-    """Returns (bgr uint8 array, gray float32 array), resized if huge."""
+def _load_image(image_bytes: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]]:
+    """Returns (bgr uint8, gray float32, native_gray float32, (height, width)).
+
+    ``bgr``/``gray`` are downscaled to MAX_DIM on the long side for the
+    geometry-level signals. ``native_gray`` is a centre crop at the file's
+    own resolution (at most NATIVE_CROP square) for the pixel-level ones.
+    The returned size is the decoded image's native size.
+    """
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if bgr is None:
         raise ValueError("could not decode image (unsupported or corrupt file)")
 
     h, w = bgr.shape[:2]
+    y0 = max(0, (h - NATIVE_CROP) // 2)
+    x0 = max(0, (w - NATIVE_CROP) // 2)
+    native = bgr[y0:y0 + NATIVE_CROP, x0:x0 + NATIVE_CROP]
+    native_gray = cv2.cvtColor(native, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
     scale = min(1.0, MAX_DIM / max(h, w))
     if scale < 1.0:
         bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    return bgr, gray
+    return bgr, gray, native_gray, (h, w)
 
 
-def _combine(visual_score: float, meta_result: dict) -> float:
-    """A strong metadata signature (explicit generator fingerprint)
-    overrides rather than just blends in. A camera-EXIF signal pulls
-    the score down moderately. Otherwise metadata stays neutral and
-    doesn't affect the visual-signal average."""
-    meta_score = meta_result["score"]
-    if meta_result.get("confidence") == "high":
-        combined = max(visual_score, meta_score)
-    elif meta_result.get("confidence") == "low-medium":
-        combined = 0.85 * visual_score + 0.15 * meta_score
-    else:
-        combined = visual_score
-    return float(np.clip(combined, 0, 1))
+def analyze_image_signals(image_bytes: bytes) -> dict:
+    """Runs all five signals on a single PNG/JPEG image and records the
+    observable context they were measured under. No weighting happens
+    here, so a result can be re-scored under different weight models
+    (``eval/calibrate_weights.py`` relies on this)."""
+    bgr, gray, native_gray, (h, w) = _load_image(image_bytes)
 
-
-def _run_image_analysis(image_bytes: bytes) -> dict:
-    """Runs all five signals on a single PNG/JPEG image."""
-    bgr, gray = _load_image(image_bytes)
-
-    freq_result = frequency.analyze(gray)
-    noise_result = noise.analyze(gray)
+    freq_result = frequency.analyze(native_gray)
+    noise_result = noise.analyze(native_gray)
     grad_result = gradients.analyze(bgr, gray)
     light_result = lighting.analyze(gray)
     meta_result = metadata.analyze(image_bytes)
 
-    visual_score = (
-        WEIGHTS["frequency"] * freq_result["score"]
-        + WEIGHTS["noise"] * noise_result["score"]
-        + WEIGHTS["gradients"] * grad_result["score"]
-        + WEIGHTS["lighting"] * light_result["score"]
+    context = image_context_module.image_context(
+        image_bytes,
+        fmt=_detect_format(image_bytes),
+        width=w,
+        height=h,
+        bgr=bgr,
+        native_gray=native_gray,
+        frequency_result=freq_result,
     )
-    combined = _combine(visual_score, meta_result)
-
     return {
-        "ai_generated": round(combined, 4),
         "signals": {
             "frequency": freq_result,
             "noise": noise_result,
             "gradients": grad_result,
             "lighting": light_result,
-            "metadata": meta_result,
         },
+        "metadata": meta_result,
+        "context": context,
     }
+
+
+def score_image_signals(analysis: dict, model=_DEFAULT_MODEL) -> dict:
+    """Combines an ``analyze_image_signals`` result into the response."""
+    signals = analysis["signals"]
+    context = analysis["context"]
+    visual_score, scoring = _visual_score(signals, context["buckets"], model)
+    combined = _combine(visual_score, analysis["metadata"])
+    return {
+        "ai_generated": round(combined, 4),
+        "signals": {**signals, "metadata": analysis["metadata"]},
+        "scoring": {**scoring, "context": context},
+    }
+
+
+def _run_image_analysis(image_bytes: bytes) -> dict:
+    """Runs all five signals on a single PNG/JPEG image and scores them."""
+    return score_image_signals(analyze_image_signals(image_bytes))
+
+
+def _pdf_metadata_verdict(aggregate: dict, explicit_meta: dict, legacy_meta: dict) -> tuple[float, str, bool]:
+    """Folds the PDF's document metadata into the visual aggregate.
+
+    Uses the image path's rule (``app.scoring.combine``): a generator
+    signature raises the score to at least its own value and never lowers
+    stronger visual evidence. Returns (score, confidence, score_applicable).
+    """
+    visual = float(aggregate.get("score", 0.0))
+    for meta in (explicit_meta, legacy_meta):
+        if meta.get("confidence") == "high":
+            return float(np.clip(_combine(visual, meta), 0, 1)), "high", True
+    return visual, aggregate.get("confidence", "insufficient"), aggregate.get("worst_page") is not None
 
 
 def _run_pdf_analysis(pdf_bytes: bytes) -> dict:
@@ -175,13 +226,28 @@ def _run_pdf_analysis(pdf_bytes: bytes) -> dict:
         profile = item["profile"]
 
         # Whole-page analysis is valid only when raster content dominates.
+        # Page renders and embedded rasters are combined with the same
+        # weights, context factors and cap as a direct upload (app.scoring);
+        # document.py only adds the PDF gates.
+        page_buckets = None
         if profile.get("photo_forensics_applicable"):
             image_result = _run_image_analysis(page_bytes)
             page_signals = image_result["signals"]
+            page_buckets = image_result["scoring"]["context"]["buckets"]
+            # A 1:1 render reproduces its dominant raster's pixels, so it
+            # gets that raster's context too (e.g. the JPEG quality read from
+            # its DCTDecode stream), exactly as the embedded image does.
+            dominant = next(
+                (img["profile"] for img in item.get("embedded_images", [])
+                 if img["profile"].get("image_index") == profile.get("dominant_image_index")),
+                None,
+            )
+            if dominant is not None and profile.get("render_resampled") is False:
+                page_buckets = image_context_module.embedded_raster_buckets(page_buckets, dominant)
         else:
             page_signals = document.not_applicable_signals(profile)
 
-        page_render_scoring = document.score_pdf_page(page_signals, profile)
+        page_render_scoring = document.score_pdf_page(page_signals, profile, page_buckets)
 
         embedded_results = []
         for embedded in item.get("embedded_images", []):
@@ -189,9 +255,18 @@ def _run_pdf_analysis(pdf_bytes: bytes) -> dict:
             try:
                 embedded_image_result = _run_image_analysis(embedded["png_bytes"])
                 embedded_signals = embedded_image_result["signals"]
+                # The image's own file metadata (EXIF in a DCTDecode stream) is
+                # folded in exactly as for an upload; the PNG re-encode used
+                # for the pixel signals carries none.
+                source = embedded.get("source_bytes")
                 embedded_scoring = document.score_embedded_image(
                     embedded_signals,
                     embedded_profile,
+                    image_context_module.embedded_raster_buckets(
+                        embedded_image_result["scoring"]["context"]["buckets"],
+                        embedded_profile,
+                    ),
+                    metadata_result=metadata.analyze(source) if source else None,
                 )
             except Exception as exc:
                 embedded_signals = document.unavailable_embedded_signals(str(exc))
@@ -311,20 +386,9 @@ def _run_pdf_analysis(pdf_bytes: bytes) -> dict:
 
     explicit_metadata_hit = explicit_meta.get("confidence") == "high"
     legacy_metadata_hit = legacy_doc_meta.get("confidence") == "high"
-
-    if explicit_metadata_hit:
-        combined = float(explicit_meta["score"])
-        overall_confidence = "high"
-        score_applicable = True
-    elif legacy_metadata_hit:
-        combined = max(float(aggregate["score"]), float(legacy_doc_meta["score"]))
-        overall_confidence = "high"
-        score_applicable = True
-    else:
-        combined = float(aggregate["score"])
-        overall_confidence = aggregate["confidence"]
-        score_applicable = aggregate.get("worst_page") is not None
-
+    combined, overall_confidence, score_applicable = _pdf_metadata_verdict(
+        aggregate, explicit_meta, legacy_doc_meta
+    )
     combined = float(np.clip(combined, 0, 1))
     classification, description = document.classify_pdf(
         combined,

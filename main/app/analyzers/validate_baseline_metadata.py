@@ -328,7 +328,7 @@ IMAGE_SCENARIOS: list[ImageScenario] = [
         {"JPEG", "PNG"},
         lambda c, f: _inject(c, f, exif=exif_blob({Tag.Software: "DALL-E 3"})),
         {"score": SIG, "confidence": "high", "hits_include": ["EXIF Software tag references 'dall-e'"]},
-        mirrors="TestAnalyzeExifSoftwareTag.test_matching_is_case_insensitive_and_substring_based",
+        mirrors="TestAnalyzeExifSoftwareTag.test_matching_is_case_insensitive_and_whole_token_based",
     ),
     ImageScenario(
         "exif-software-mundane-photoshop",
@@ -472,10 +472,20 @@ PDF_SCENARIOS: list[PdfScenario] = [
     PdfScenario(
         "two-generators-in-subject",
         lambda fields: {**fields, "Subject": "Midjourney vs Ideogram comparison"},
+        # Sorted order: the matcher shared with document.py reports terms
+        # sorted and de-duplicated.
         {"confidence": "high",
-         "hits_exact": ["PDF metadata field 'Subject' references 'midjourney'",
-                        "PDF metadata field 'Subject' references 'ideogram'"]},
+         "hits_exact": ["PDF metadata field 'Subject' references 'ideogram'",
+                        "PDF metadata field 'Subject' references 'midjourney'"]},
         mirrors="TestAnalyzePdfDocument.test_one_field_mentioning_two_generators_reports_both",
+    ),
+    PdfScenario(
+        "common-words-are-not-provenance",
+        lambda fields: {**fields, "Title": "Flux de tresorerie 2024",
+                        "Subject": "Pose de dalles - reflux - InfluxData export",
+                        "Author": "Maria Dallesandro", "Producer": "Firefly Print Server"},
+        {"score": vm.NEUTRAL_SCORE, "confidence": "low", "no_signature": True},
+        mirrors="TestAnalyzePdfDocument.test_ordinary_words_are_not_provenance",
     ),
     PdfScenario(
         "empty-info-dict",

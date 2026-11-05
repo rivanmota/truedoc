@@ -42,6 +42,7 @@ _MAIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _MAIN_DIR not in sys.path:
     sys.path.insert(0, _MAIN_DIR)
 
+from app import scoring  # noqa: E402
 from app.analyzers import document  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -66,9 +67,14 @@ EMBEDDED_PROFILE = {
     "filters": ["DCTDecode"],
 }
 
-# Reliability shrink is ews / 0.55 (clipped to 1). Noise alone at medium
-# confidence has ews == 0.45, so its score is multiplied by 0.45 / 0.55.
-NOISE_ONLY_RELIABILITY = 0.45 / 0.55
+# PDF elements are combined by the image path (app.scoring): same weights,
+# confidence factors, no-portrait redistribution and single-signal cap.
+W = {"frequency": 0.25, "noise": 0.40, "gradients": 0.25, "lighting": 0.10}
+LOW_MEDIUM, LOW = 0.7, 0.5
+CAP = 0.60
+# Gradients not applicable: its 0.25 moves to noise and frequency, 0.40 : 0.25.
+NP_F = W["frequency"] + W["gradients"] * W["frequency"] / (W["frequency"] + W["noise"])
+NP_N = W["noise"] + W["gradients"] * W["noise"] / (W["frequency"] + W["noise"])
 
 
 def sig(score, confidence: str = "medium", note: str = "signal computed normally") -> dict:
@@ -161,25 +167,36 @@ def used_signals(result: dict) -> set[str]:
 
 
 class TestConstants:
-    def test_pdf_scan_weights_sum_to_one(self):
+    def test_pdf_weights_are_the_image_path_weights(self):
+        # One set of weights for every path: a picture inside a PDF must not
+        # be weighted differently from the same picture uploaded directly.
+        assert document.PDF_SCAN_WEIGHTS is scoring.WEIGHTS
+        assert document.PDF_SCAN_WEIGHTS == W
+
+    def test_pdf_weights_sum_to_one(self):
         assert sum(document.PDF_SCAN_WEIGHTS.values()) == pytest.approx(1.0)
 
-    def test_pdf_scan_weights_cover_exactly_the_four_visual_signals(self):
+    def test_pdf_weights_cover_exactly_the_four_visual_signals(self):
         assert set(document.PDF_SCAN_WEIGHTS) == set(SIGNAL_NAMES)
 
-    def test_noise_is_the_dominant_pdf_signal(self):
+    def test_noise_is_the_dominant_signal_and_lighting_the_weakest(self):
         w = document.PDF_SCAN_WEIGHTS
-        assert w["noise"] > w["gradients"] > w["lighting"] > w["frequency"]
+        assert w["noise"] > w["gradients"] == w["frequency"] > w["lighting"]
 
-    def test_confidence_factors_are_monotonic(self):
+    def test_confidence_factors_are_the_image_path_factors(self):
         f = document.CONFIDENCE_FACTOR
+        assert f is scoring.CONFIDENCE_FACTOR
         assert f["high"] == f["medium"] == 1.0
+        assert f["low-medium"] == LOW_MEDIUM and f["low"] == LOW
         assert 0 < f["low"] < f["low-medium"] < f["medium"]
 
-    def test_noise_alone_at_full_confidence_cannot_reach_full_reliability(self):
-        # Documented intent: roughly noise + one other useful signal (0.55)
-        # is needed before a page may express its full score.
-        assert document.PDF_SCAN_WEIGHTS["noise"] < 0.55
+    def test_tier_thresholds(self):
+        assert (document.TIER_MEDIUM_HIGH, document.TIER_MEDIUM, document.TIER_LOW_MEDIUM,
+                document.USABLE_MIN_WEIGHT) == (0.65, 0.40, 0.20, 0.15)
+
+    def test_no_single_signal_reaches_medium_high_on_its_own(self):
+        # Only corroborated evidence can carry the strongest tier.
+        assert max(document.PDF_SCAN_WEIGHTS.values()) < document.TIER_MEDIUM_HIGH
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +263,31 @@ class TestAnalyzePdfMetadata:
         assert result["generator_references"] == ["chatgpt", "openai"]
 
     def test_original_fields_are_echoed_back(self):
-        fields = {"Title": "Invoice", "Producer": "Firefly"}
+        fields = {"Title": "Invoice", "Producer": "Adobe Firefly"}
         result = document.analyze_pdf_metadata(fields)
         assert result["pdf_fields"] is fields
-        assert "adobe firefly" not in result["generator_references"]
-        assert result["generator_references"] == ["firefly"]
+        assert result["generator_references"] == ["adobe firefly"]
+
+    def test_bare_common_words_are_not_generator_terms(self):
+        # "flux", "dalle" and "firefly" are ordinary English/French/Italian
+        # words; only the product forms ("FLUX.1", "DALL-E", "Adobe Firefly")
+        # are provenance. (This test used to expect "Firefly" -> a hit, which
+        # contradicted the documented term list.)
+        for word in ("flux", "dalle", "firefly"):
+            assert word not in document.AI_GENERATOR_TERMS
+        result = document.analyze_pdf_metadata({"Title": "Invoice", "Producer": "Firefly Print Server"})
+        assert result["confidence"] == "low"
+        assert result["generator_references"] == []
+
+    def test_generator_list_is_shared_with_image_metadata_analyzer(self):
+        from app.analyzers import metadata
+        assert metadata.KNOWN_GENERATOR_SOFTWARE is document.AI_GENERATOR_TERMS
+        for fields in ({"Title": "reflux study"}, {"Producer": "InfluxData"}, {"Author": "Dallesandro"}):
+            assert metadata.analyze_pdf_document(fields)["confidence"] == "low"
+            assert document.analyze_pdf_metadata(fields)["confidence"] == "low"
+        for fields in ({"Creator": "Midjourney"}, {"Creator": "InvokeAI"}, {"Creator": "ChatGPT"}):
+            assert metadata.analyze_pdf_document(fields)["confidence"] == "high"
+            assert document.analyze_pdf_metadata(fields)["confidence"] == "high"
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +366,7 @@ class TestSignalAvailabilityGating:
         profile = {"content_type": "mixed_document", "image_area_fraction": fraction}
         result = document.score_pdf_page(full_signals(1.0, "high"), profile)
         assert used_signals(result) == {"noise", "gradients"}
-        assert result["effective_weight_sum"] == pytest.approx(0.80)
+        assert result["effective_weight_sum"] == pytest.approx(W["noise"] + W["gradients"])
 
     @pytest.mark.parametrize("fraction", [0.80, 0.95, 1.0])
     def test_mixed_page_at_or_above_080_allows_all_signals(self, fraction):
@@ -343,12 +380,51 @@ class TestSignalAvailabilityGating:
         result = document.score_pdf_page(full_signals(1.0, "high"), profile)
         assert used_signals(result) == {"noise", "gradients"}
 
-    def test_image_area_fraction_defaults_to_zero_when_missing(self):
-        # Unknown content type + no fraction: frequency/lighting gated out by
-        # the 0.80 rule, but noise/gradients are still allowed.
-        result = document.score_pdf_page(full_signals(1.0, "high"), {})
-        assert used_signals(result) == {"noise", "gradients"}
-        assert result["content_type"] == "unknown"
+    @pytest.mark.parametrize("profile", [
+        {},
+        {"content_type": None, "image_area_fraction": 1.0},
+        {"content_type": "unknown", "image_area_fraction": 1.0},
+        {"content_type": "form_document", "image_area_fraction": 1.0},
+        {"content_type": "SCANNED_OR_IMAGE_DOCUMENT", "image_area_fraction": 1.0},
+        {"content_type": "photo", "image_area_fraction": 1.0},
+    ])
+    def test_unknown_or_missing_content_type_fails_closed(self, profile):
+        # Page-type gating is an allow-list (RASTER_PAGE_TYPES): an empty
+        # profile, None, a typo, a case mismatch or a future type must not be
+        # scored as a camera image, whatever image_area_fraction says. (This
+        # replaces a test expecting unknown types to be scored, which
+        # contradicted the documented fail-closed design.)
+        assert document.RASTER_PAGE_TYPES == {"scanned_or_image_document", "mixed_document"}
+        result = document.score_pdf_page(full_signals(1.0, "high"), profile)
+        assert used_signals(result) == set()
+        assert result["confidence"] == "insufficient"
+        assert result["usable"] is False
+
+    def test_missing_content_type_is_reported_as_unknown(self):
+        assert document.score_pdf_page(full_signals(1.0), {})["content_type"] == "unknown"
+
+    def test_resampled_render_gates_pixel_level_signals(self):
+        # A render our renderer could not draw 1:1 would make the frequency,
+        # noise and gradients signals measure the renderer; only lighting is
+        # left, which is never evidence on its own.
+        profile = {**IMAGE_PAGE, "render_resampled": True}
+        result = document.score_pdf_page(full_signals(1.0, "high"), profile)
+        assert used_signals(result) == {"lighting"}
+        assert result["confidence"] == "insufficient"
+        assert result["score"] == 0.0
+
+    def test_faithful_render_keeps_every_signal(self):
+        profile = {**IMAGE_PAGE, "render_resampled": False}
+        result = document.score_pdf_page(full_signals(0.7), profile)
+        assert used_signals(result) == set(SIGNAL_NAMES)
+        assert result["score"] == pytest.approx(0.7)
+
+    def test_profiles_without_render_information_are_not_gated(self):
+        # Hand-built / older profiles: the pipeline always sets the key.
+        assert used_signals(document.score_pdf_page(full_signals(0.7), IMAGE_PAGE)) == set(SIGNAL_NAMES)
+
+    def test_pixel_level_signal_set(self):
+        assert document.PIXEL_LEVEL_SIGNALS == {"frequency", "noise", "gradients"}
 
     def test_image_area_fraction_accepts_string_numbers(self):
         profile = {"content_type": "scanned_or_image_document", "image_area_fraction": "0.9"}
@@ -372,7 +448,7 @@ class TestScorePdfPage:
             assert result["confidence"] == "medium-high"
             assert result["usable"] is True
 
-    def test_score_is_weighted_by_pdf_scan_weights(self):
+    def test_score_is_weighted_by_the_image_path_weights(self):
         signals = {
             "frequency": sig(1.0),
             "noise": sig(0.0),
@@ -380,9 +456,21 @@ class TestScorePdfPage:
             "lighting": sig(0.0),
         }
         result = document.score_pdf_page(signals, IMAGE_PAGE)
-        expected = (0.05 * 1.0 + 0.45 * 0.0 + 0.35 * 1.0 + 0.15 * 0.0) / 1.0
+        expected = (0.25 * 1.0 + 0.40 * 0.0 + 0.25 * 1.0 + 0.10 * 0.0) / 1.0
         assert result["score"] == pytest.approx(expected, abs=1e-4)
-        assert result["score"] == pytest.approx(0.40, abs=1e-4)
+        assert result["score"] == pytest.approx(0.50, abs=1e-4)
+
+    def test_no_portrait_redistributes_gradients_weight(self):
+        # Same rule as an uploaded non-portrait: gradients' weight moves to
+        # noise and frequency in proportion 0.40 : 0.25.
+        signals = {"frequency": sig(0.8), "noise": sig(0.4), "lighting": sig(0.2)}
+        result = document.score_pdf_page(signals, IMAGE_PAGE)
+        expected = (NP_F * 0.8 + NP_N * 0.4 + W["lighting"] * 0.2) / (NP_F + NP_N + W["lighting"])
+        assert result["score"] == pytest.approx(expected, abs=1e-4)
+        assert result["combiner"]["gradients_weight_redistributed_to"] == ["noise", "frequency"]
+        # ...but the evidence weight reports what was *measured*, before
+        # redistribution: 0.25 + 0.40 + 0.10.
+        assert result["effective_weight_sum"] == pytest.approx(0.75)
 
     def test_high_and_medium_confidence_are_equivalent(self):
         r_high = document.score_pdf_page(full_signals(0.7, "high"), IMAGE_PAGE)
@@ -390,95 +478,102 @@ class TestScorePdfPage:
         assert r_high["score"] == r_med["score"]
         assert r_high["effective_weight_sum"] == r_med["effective_weight_sum"]
 
-    def test_low_medium_confidence_scales_weight_by_0_6(self):
+    def test_low_medium_confidence_scales_weight_by_0_7(self):
         signals = full_signals(0.5)
         signals["noise"] = sig(0.5, "low-medium")
         result = document.score_pdf_page(signals, IMAGE_PAGE)
-        assert result["contributions"]["noise"]["effective_weight"] == pytest.approx(0.45 * 0.6)
-        assert result["effective_weight_sum"] == pytest.approx(0.05 + 0.27 + 0.35 + 0.15)
+        assert result["contributions"]["noise"]["effective_weight"] == pytest.approx(0.40 * 0.7)
+        assert result["effective_weight_sum"] == pytest.approx(0.25 + 0.28 + 0.25 + 0.10)
 
-    def test_low_confidence_scales_weight_by_0_2(self):
+    def test_low_confidence_scales_weight_by_0_5(self):
         signals = full_signals(0.5)
         signals["gradients"] = sig(0.5, "low")
         result = document.score_pdf_page(signals, IMAGE_PAGE)
-        assert result["contributions"]["gradients"]["effective_weight"] == pytest.approx(0.35 * 0.2)
+        assert result["contributions"]["gradients"]["effective_weight"] == pytest.approx(0.25 * 0.5)
 
-    def test_unknown_confidence_string_contributes_zero_weight(self):
-        # NOTE: unlike score_embedded_image, score_pdf_page still reports the
-        # signal as ``used`` -- but with effective_weight 0 it cannot move the
-        # score. This pins the current behaviour.
+    def test_unknown_confidence_string_counts_as_low(self):
+        # Changed with the shared combiner: an unrecognised confidence used
+        # to zero a signal on PDFs only; it now counts as "low" (0.5) on
+        # every path, as it always did for uploaded images.
         signals = full_signals(0.2)
         signals["noise"] = sig(1.0, "bogus")
         result = document.score_pdf_page(signals, IMAGE_PAGE)
-        assert result["contributions"]["noise"]["effective_weight"] == 0.0
-        # Remaining weights: 0.05 + 0.35 + 0.15 = 0.55 -> reliability exactly 1.
-        assert result["effective_weight_sum"] == pytest.approx(0.55)
-        assert result["raw_normalized_score"] == pytest.approx(0.2)
-        assert result["score"] == pytest.approx(0.2)
+        assert result["contributions"]["noise"]["used"] is True
+        assert result["contributions"]["noise"]["effective_weight"] == pytest.approx(0.40 * 0.5)
+        assert result["effective_weight_sum"] == pytest.approx(0.25 + 0.20 + 0.25 + 0.10)
+        expected = (0.25 * 0.2 + 0.20 * 1.0 + 0.25 * 0.2 + 0.10 * 0.2) / 0.80
+        assert result["score"] == pytest.approx(expected, abs=1e-4)
 
-    def test_only_unknown_confidence_signal_is_insufficient(self):
+    def test_only_unknown_confidence_signal_is_a_capped_single_signal(self):
         result = document.score_pdf_page({"noise": sig(1.0, "bogus")}, IMAGE_PAGE)
-        assert result["confidence"] == "insufficient"
-        assert result["usable"] is False
-        assert result["score"] == 0.0
+        assert result["effective_weight_sum"] == pytest.approx(0.20)
+        assert result["confidence"] == "low-medium"
+        assert result["score"] == CAP
 
     def test_missing_confidence_defaults_to_low(self):
         result = document.score_pdf_page({"noise": {"score": 1.0, "note": ""}}, IMAGE_PAGE)
         assert result["contributions"]["noise"]["confidence"] == "low"
-        assert result["contributions"]["noise"]["effective_weight"] == pytest.approx(0.09)
+        assert result["contributions"]["noise"]["effective_weight"] == pytest.approx(0.20)
 
-    def test_low_confidence_signals_cannot_create_a_high_page_score(self):
-        # Every signal "screams AI" but at low confidence: ews = 0.20,
-        # reliability = 0.20/0.55, so the score is strongly shrunk.
+    def test_low_confidence_evidence_gets_a_low_tier(self):
+        # Every signal "screams AI" at low confidence. Confidence re-weights
+        # signals against each other; it does not shrink a unanimous score
+        # (the old PDF-only reliability shrink is gone). Thin evidence shows
+        # in the tier instead: 0.5 of the stack -> "medium", not "medium-high".
         result = document.score_pdf_page(full_signals(1.0, "low"), IMAGE_PAGE)
-        assert result["effective_weight_sum"] == pytest.approx(0.20)
-        assert result["raw_normalized_score"] == pytest.approx(1.0)
-        assert result["score"] == pytest.approx(0.20 / 0.55, abs=1e-4)
-        assert result["usable"] is True
-        # The unrounded sum 0.01+0.09+0.07+0.03 is 0.19999999999999998 in
-        # IEEE-754; tiers are compared on the 4-decimal-rounded sum so this
-        # lands on the nominal "low-medium" boundary, not below it.
-        assert result["confidence"] == "low-medium"
+        assert result["effective_weight_sum"] == pytest.approx(0.50)
+        assert result["score"] == pytest.approx(1.0)
+        assert result["confidence"] == "medium"
 
-    def test_noise_only_is_shrunk_by_reliability(self):
+    def test_noise_only_is_capped_like_an_uploaded_image(self):
+        # Replaces the old reliability shrink (1.0 -> 0.8182): one
+        # substantive signal is capped at 0.60, as for a direct upload.
         result = document.score_pdf_page({"noise": sig(1.0)}, IMAGE_PAGE)
         assert result["raw_normalized_score"] == 1.0
-        assert result["effective_weight_sum"] == pytest.approx(0.45)
-        assert result["score"] == pytest.approx(NOISE_ONLY_RELIABILITY, abs=1e-4)
-        assert result["score"] == 0.8182
+        assert result["effective_weight_sum"] == pytest.approx(0.40)
+        assert result["score"] == CAP
+        assert result["combiner"]["single_signal_cap_applied"] is True
         assert result["confidence"] == "medium"
         assert result["usable"] is True
 
-    def test_reliability_saturates_at_055(self):
-        # noise (0.45) + lighting (0.15) = 0.60 >= 0.55 -> no shrink.
-        signals = {"noise": sig(0.8), "lighting": sig(0.8)}
-        result = document.score_pdf_page(signals, IMAGE_PAGE)
-        assert result["score"] == pytest.approx(0.8)
-        assert result["raw_normalized_score"] == pytest.approx(0.8)
+    def test_single_signal_below_the_cap_is_not_changed(self):
+        result = document.score_pdf_page({"noise": sig(0.45)}, IMAGE_PAGE)
+        assert result["score"] == pytest.approx(0.45)
+        assert result["combiner"]["single_signal_cap_applied"] is False
 
-    def test_reliability_exactly_at_055_is_not_shrunk(self):
-        # frequency + gradients + lighting = 0.05 + 0.35 + 0.15 = 0.55
-        signals = {"frequency": sig(0.6), "gradients": sig(0.6), "lighting": sig(0.6)}
+    def test_lighting_is_not_corroboration_on_pdfs_either(self):
+        result = document.score_pdf_page({"noise": sig(0.8), "lighting": sig(0.8)}, IMAGE_PAGE)
+        assert result["score"] == CAP
+
+    def test_two_substantive_signals_are_not_capped(self):
+        signals = {"frequency": sig(0.8), "gradients": sig(0.8), "lighting": sig(0.8)}
         result = document.score_pdf_page(signals, IMAGE_PAGE)
-        assert result["effective_weight_sum"] == pytest.approx(0.55)
-        assert result["score"] == pytest.approx(0.6)
+        assert result["effective_weight_sum"] == pytest.approx(0.60)
+        assert result["score"] == pytest.approx(0.8)
+
+    def test_lighting_only_page_is_insufficient_not_inconclusive(self):
+        # A direct upload with no substantive signal reports 0.5
+        # ("inconclusive"); inside a document it must add no risk at all.
+        result = document.score_pdf_page({"lighting": sig(1.0, "high")}, IMAGE_PAGE)
+        assert result["confidence"] == "insufficient"
+        assert result["usable"] is False
+        assert result["score"] == 0.0
 
     @pytest.mark.parametrize(
         "signals, expected_ews, expected_conf",
         [
             (full_signals(0.5), 1.00, "medium-high"),
-            ({"noise": sig(0.5), "lighting": sig(0.5), "frequency": sig(0.5)}, 0.65, "medium-high"),
-            ({"noise": sig(0.5), "lighting": sig(0.5)}, 0.60, "medium"),
-            ({"noise": sig(0.5)}, 0.45, "medium"),
-            # 0.35 + 0.05 == 0.39999999999999997 in floating point; the
-            # rounded comparison keeps this on the "medium" boundary.
-            ({"gradients": sig(0.5), "frequency": sig(0.5)}, 0.40, "medium"),
-            ({"gradients": sig(0.5)}, 0.35, "low-medium"),
-            ({"noise": sig(0.5, "low-medium")}, 0.27, "low-medium"),
-            ({"frequency": sig(0.5), "lighting": sig(0.5)}, 0.20, "low-medium"),
-            ({"lighting": sig(0.5)}, 0.15, "low"),
-            ({"noise": sig(0.5, "low")}, 0.09, "low"),
-            ({"frequency": sig(0.5)}, 0.05, "low"),
+            ({"noise": sig(0.5), "lighting": sig(0.5), "frequency": sig(0.5)}, 0.75, "medium-high"),
+            ({"noise": sig(0.5), "frequency": sig(0.5)}, 0.65, "medium-high"),
+            ({"noise": sig(0.5), "lighting": sig(0.5)}, 0.50, "medium"),
+            ({"gradients": sig(0.5), "frequency": sig(0.5)}, 0.50, "medium"),
+            ({"noise": sig(0.5)}, 0.40, "medium"),
+            ({"frequency": sig(0.5), "lighting": sig(0.5)}, 0.35, "low-medium"),
+            ({"noise": sig(0.5, "low-medium")}, 0.28, "low-medium"),
+            ({"gradients": sig(0.5)}, 0.25, "low-medium"),
+            ({"noise": sig(0.5, "low")}, 0.20, "low-medium"),
+            ({"frequency": sig(0.5, "low-medium")}, 0.175, "low"),
+            ({"gradients": sig(0.5, "low")}, 0.125, "low"),
         ],
     )
     def test_confidence_tiers_by_effective_weight(self, signals, expected_ews, expected_conf):
@@ -489,11 +584,12 @@ class TestScorePdfPage:
     @pytest.mark.parametrize(
         "signals, expected_usable",
         [
-            ({"lighting": sig(0.9)}, True),                 # 0.15 -> boundary, usable
-            ({"lighting": sig(0.9, "low-medium")}, False),  # 0.09
-            ({"noise": sig(0.9, "low")}, False),            # 0.09
-            ({"frequency": sig(0.9), "noise": sig(0.9, "low")}, False),  # 0.14
-            ({"gradients": sig(0.9, "low-medium")}, True),  # 0.21
+            ({"frequency": sig(0.9, "low-medium")}, True),  # 0.175
+            ({"noise": sig(0.9, "low")}, True),             # 0.20
+            ({"gradients": sig(0.9, "low")}, False),        # 0.125
+            ({"frequency": sig(0.9, "low")}, False),        # 0.125
+            ({"lighting": sig(0.9)}, False),                # no substantive signal
+            ({"gradients": sig(0.9, "low"), "lighting": sig(0.9, "low")}, True),  # 0.175
         ],
     )
     def test_usable_requires_effective_weight_of_at_least_015(self, signals, expected_usable):
@@ -522,7 +618,7 @@ class TestScorePdfPage:
             "contributions": {
                 name: {
                     "used": False,
-                    "reason": "not applicable or unavailable for this PDF page",
+                    "reason": "not applicable or unavailable for this PDF element",
                     "effective_weight": 0.0,
                 }
                 for name in SIGNAL_NAMES
@@ -541,6 +637,7 @@ class TestScorePdfPage:
             "evidence_coverage",
             "content_type",
             "contributions",
+            "combiner",
             "note",
         }
         assert set(result["contributions"]) == set(SIGNAL_NAMES)
@@ -550,10 +647,11 @@ class TestScorePdfPage:
             assert c["score"] == 0.3
             assert c["confidence"] == "medium"
             assert c["effective_weight"] == document.PDF_SCAN_WEIGHTS[name]
+            assert c["combined_weight"] == pytest.approx(document.PDF_SCAN_WEIGHTS[name])
 
     def test_evidence_coverage_is_fraction_of_total_base_weight(self):
         result = document.score_pdf_page({"gradients": sig(0.5), "noise": sig(0.5, "low-medium")}, IMAGE_PAGE)
-        assert result["evidence_coverage"] == pytest.approx(0.35 + 0.27)
+        assert result["evidence_coverage"] == pytest.approx(0.25 + 0.28)
 
     def test_scores_are_rounded_to_four_decimals(self):
         result = document.score_pdf_page({"noise": sig(1 / 3)}, IMAGE_PAGE)
@@ -643,9 +741,15 @@ class TestScoreEmbeddedImage:
         result = document.score_embedded_image(signals, EMBEDDED_PROFILE)
         assert result["contributions"]["noise"] == {
             "used": False,
-            "reason": "unavailable or insufficient-confidence signal",
+            "reason": "not applicable or unavailable for this PDF element",
             "effective_weight": 0.0,
         }
+
+    def test_applicable_false_is_unavailable(self):
+        signals = full_signals(0.9)
+        signals["gradients"] = {"score": 0.5, "confidence": "low", "applicable": False, "note": "x"}
+        result = document.score_embedded_image(signals, EMBEDDED_PROFILE)
+        assert "gradients" not in used_signals(result)
 
     @pytest.mark.parametrize("phrase", document._UNAVAILABLE_PHRASES)
     def test_unavailable_note_phrases_disable_a_signal(self, phrase):
@@ -659,13 +763,14 @@ class TestScoreEmbeddedImage:
         result = document.score_embedded_image(signals, EMBEDDED_PROFILE)
         assert used_signals(result) == {"noise"}
 
-    def test_unknown_confidence_is_marked_unused(self):
+    def test_unknown_confidence_counts_as_low(self):
         signals = full_signals(0.2)
         signals["noise"] = sig(1.0, "definitely-not-a-tier")
         result = document.score_embedded_image(signals, EMBEDDED_PROFILE)
-        assert result["contributions"]["noise"]["used"] is False
-        assert result["effective_weight_sum"] == pytest.approx(0.55)
-        assert result["score"] == pytest.approx(0.2)
+        assert result["contributions"]["noise"]["used"] is True
+        assert result["effective_weight_sum"] == pytest.approx(0.80)
+        page = document.score_pdf_page(signals, IMAGE_PAGE)
+        assert result["score"] == page["score"]
 
     def test_no_usable_signals_is_unusable_with_distinct_reason(self):
         result = document.score_embedded_image({}, EMBEDDED_PROFILE)
@@ -675,20 +780,23 @@ class TestScoreEmbeddedImage:
         assert result["note"] == "embedded raster had no usable forensic signals"
         assert result["image_profile"] is EMBEDDED_PROFILE
 
-    def test_noise_only_is_shrunk_by_reliability(self):
+    def test_noise_only_is_capped_like_an_uploaded_image(self):
         result = document.score_embedded_image({"noise": sig(1.0)}, EMBEDDED_PROFILE)
         assert result["raw_normalized_score"] == 1.0
-        assert result["score"] == 0.8182
+        assert result["score"] == CAP
         assert result["confidence"] == "medium"
         assert result["usable"] is True
 
-    def test_low_confidence_signals_cannot_create_a_high_score(self):
+    def test_low_confidence_evidence_gets_a_low_tier(self):
         result = document.score_embedded_image(full_signals(1.0, "low"), EMBEDDED_PROFILE)
-        assert result["effective_weight_sum"] == pytest.approx(0.20)
-        assert result["score"] == pytest.approx(0.20 / 0.55, abs=1e-4)
-        assert result["usable"] is True
-        # Same float-accumulation case as the page path: rounded to 0.20.
-        assert result["confidence"] == "low-medium"
+        assert result["effective_weight_sum"] == pytest.approx(0.50)
+        assert result["score"] == pytest.approx(1.0)
+        assert result["confidence"] == "medium"
+
+    def test_lighting_only_raster_is_unusable(self):
+        result = document.score_embedded_image({"lighting": sig(1.0, "high")}, EMBEDDED_PROFILE)
+        assert result["usable"] is False
+        assert result["note"] == "embedded raster had no usable forensic signals"
 
     @pytest.mark.parametrize(
         "signals, expected_conf, expected_usable",
@@ -696,8 +804,8 @@ class TestScoreEmbeddedImage:
             (full_signals(0.5), "medium-high", True),
             ({"noise": sig(0.5), "lighting": sig(0.5)}, "medium", True),
             ({"gradients": sig(0.5)}, "low-medium", True),
-            ({"lighting": sig(0.5)}, "low", True),     # 0.15 == usable threshold
-            ({"noise": sig(0.5, "low")}, "low", False),  # 0.09
+            ({"frequency": sig(0.5, "low-medium")}, "low", True),  # 0.175
+            ({"gradients": sig(0.5, "low")}, "low", False),        # 0.125
         ],
     )
     def test_confidence_and_usable_tiers_match_page_scoring(self, signals, expected_conf, expected_usable):
@@ -706,8 +814,8 @@ class TestScoreEmbeddedImage:
         assert result["usable"] is expected_usable
 
     def test_page_and_embedded_scoring_agree_on_identical_signals(self):
-        # Both paths share PDF_SCAN_WEIGHTS / CONFIDENCE_FACTOR / reliability
-        # rule; for a fully-raster page they must produce identical numbers.
+        # Both paths use the image-path combiner; for a fully-raster page they
+        # must produce identical numbers.
         for score in (0.1, 0.4, 0.77):
             for conf in ("high", "medium", "low-medium", "low"):
                 signals = full_signals(score, conf)
@@ -721,13 +829,12 @@ class TestScoreEmbeddedImage:
     @pytest.mark.parametrize(
         "signals, raw_sum, expected_conf",
         [
-            # 0.01 + 0.09 + 0.07 + 0.03 -> 0.19999999999999998 raw
-            (full_signals(0.5, "low"), 0.19999999999999998, "low-medium"),
-            # 0.35 + 0.05 -> 0.39999999999999997 raw
-            ({"gradients": sig(0.5), "frequency": sig(0.5)}, 0.39999999999999997, "medium"),
-            # 0.05 + 0.35 + 0.15 -> 0.5499999999999999 raw (no tier edge, but
-            # confirms the reported sum is the rounded one)
-            ({"frequency": sig(0.5), "gradients": sig(0.5), "lighting": sig(0.5)}, 0.5499999999999999, "medium"),
+            # 0.175 + 0.175 + 0.05 -> 0.39999999999999997 raw
+            ({"frequency": sig(0.5, "low-medium"), "gradients": sig(0.5, "low-medium"),
+              "lighting": sig(0.5, "low")}, 0.39999999999999997, "medium"),
+            # 0.175 + 0.28 + 0.125 + 0.07 -> 0.6499999999999999 raw
+            ({"frequency": sig(0.5, "low-medium"), "noise": sig(0.5, "low-medium"),
+              "gradients": sig(0.5, "low"), "lighting": sig(0.5, "low-medium")}, 0.6499999999999999, "medium-high"),
         ],
     )
     def test_tier_boundaries_use_rounded_weight_sum(self, signals, raw_sum, expected_conf):
@@ -768,6 +875,7 @@ class TestScoreEmbeddedImage:
             "evidence_coverage",
             "image_profile",
             "contributions",
+            "combiner",
             "note",
         }
         assert result["image_profile"] is EMBEDDED_PROFILE
@@ -776,6 +884,187 @@ class TestScoreEmbeddedImage:
     def test_all_signals_at_040_produce_exactly_040(self):
         result = document.score_embedded_image(full_signals(0.40), EMBEDDED_PROFILE)
         assert result["score"] == 0.4
+
+
+# ---------------------------------------------------------------------------
+# Parity with the image path
+# ---------------------------------------------------------------------------
+
+NEUTRAL_META = {"score": 0.5, "confidence": "low", "note": "neutral"}
+CTX = {"compression": "jpeg_low", "size": "medium", "scale": "upscaled", "color": "color"}
+CONTEXT_MODEL = {"multipliers": {
+    "frequency": {"compression": {"jpeg_low": 0.5}},
+    "noise": {"scale": {"upscaled": 1.5}},
+    "gradients": {"scale": {"upscaled": 0.8}},
+}}
+
+
+def _random_signal_sets(n, seed):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    confs = ["high", "medium", "low-medium", "low"]
+    for _ in range(n):
+        signals = {}
+        for name in SIGNAL_NAMES:
+            roll = rng.random()
+            if roll < 0.25:
+                signals[name] = {"score": 0.5, "confidence": "low", "applicable": False, "note": "n/a"}
+            else:
+                signals[name] = sig(float(rng.random()), confs[int(rng.integers(0, 4))])
+        yield signals
+
+
+def _upload_score(signals, buckets=None, model=None):
+    """What the same signals score as a direct PNG/JPEG upload."""
+    from app import main
+    analysis = {"signals": signals, "metadata": NEUTRAL_META,
+                "context": {"buckets": buckets or {}}}
+    return main.score_image_signals(analysis, model)["ai_generated"]
+
+
+class TestImagePathParity:
+    def test_embedded_raster_scores_exactly_like_an_upload(self):
+        checked = 0
+        for signals in _random_signal_sets(400, seed=11):
+            emb = document.score_embedded_image(signals, EMBEDDED_PROFILE, None, None)
+            if not emb["usable"] and emb["confidence"] == "insufficient":
+                continue
+            assert emb["score"] == _upload_score(signals)
+            checked += 1
+        assert checked > 250
+
+    def test_full_raster_page_scores_exactly_like_an_upload(self):
+        for signals in _random_signal_sets(300, seed=12):
+            page = document.score_pdf_page(signals, IMAGE_PAGE, None, None)
+            if page["confidence"] == "insufficient":
+                continue
+            assert page["score"] == _upload_score(signals)
+
+    def test_context_factors_apply_identically(self):
+        for signals in _random_signal_sets(300, seed=13):
+            emb = document.score_embedded_image(signals, EMBEDDED_PROFILE, CTX, CONTEXT_MODEL)
+            if emb["confidence"] == "insufficient":
+                continue
+            assert emb["score"] == _upload_score(signals, CTX, CONTEXT_MODEL)
+            assert emb["combiner"]["context_buckets"] == CTX
+
+    def test_context_factors_change_the_pdf_score(self):
+        signals = {"frequency": sig(0.9), "noise": sig(0.3), "lighting": sig(0.5)}
+        plain = document.score_embedded_image(signals, EMBEDDED_PROFILE, None, CONTEXT_MODEL)
+        ctx = document.score_embedded_image(signals, EMBEDDED_PROFILE, CTX, CONTEXT_MODEL)
+        assert ctx["score"] < plain["score"]  # frequency halved, noise boosted
+        assert ctx["combiner"]["context_weighting"] is True
+        assert plain["combiner"]["context_weighting"] is False
+
+    def test_gated_page_equals_an_upload_of_the_allowed_signals(self):
+        # On a mixed page below 0.80 image area, frequency and lighting are
+        # gated out: the page must score exactly what an upload would with
+        # only noise + gradients measured (the gated signals not applicable).
+        profile = {"content_type": "mixed_document", "image_area_fraction": 0.75}
+        for signals in _random_signal_sets(200, seed=14):
+            page = document.score_pdf_page(signals, profile, None, None)
+            if page["confidence"] == "insufficient":
+                continue
+            allowed = dict(signals)
+            for gated in ("frequency", "lighting"):
+                allowed[gated] = {"score": None, "applicable": False, "note": "gated"}
+            assert page["score"] == _upload_score(allowed)
+
+    def test_realistic_non_portrait_raster(self):
+        # Signals measured on fireplace-generated.png: the embedded raster
+        # gets the upload's 0.731 (static weights), where the old PDF
+        # weights gave it 0.66.
+        signals = {
+            "frequency": sig(0.870), "noise": sig(0.694),
+            "gradients": {"score": 0.5, "confidence": "low", "applicable": False,
+                          "note": "no clear portrait subject"},
+            "lighting": sig(0.179, "low"),
+        }
+        emb = document.score_embedded_image(signals, EMBEDDED_PROFILE, None, None)
+        assert emb["score"] == pytest.approx(0.7309, abs=1e-4)
+        assert emb["score"] == _upload_score(signals)
+        assert emb["confidence"] == "medium-high"  # 0.25 + 0.40 + 0.05
+
+    def test_realistic_faceless_jpeg_is_now_usable_evidence(self):
+        # human.jpeg: noise unavailable (JPEG grid), no face. Under the old
+        # PDF weights (frequency 0.05) this was "insufficient"; with the
+        # image-path weights it is low-medium evidence that reads as real.
+        signals = {
+            "frequency": sig(0.0),
+            "noise": {"score": 0.5, "confidence": "low", "applicable": False,
+                      "note": "noise floor unavailable as evidence"},
+            "gradients": {"score": 0.5, "confidence": "low", "applicable": False,
+                          "note": "no clear portrait subject"},
+            "lighting": sig(0.502, "low"),
+        }
+        emb = document.score_embedded_image(signals, EMBEDDED_PROFILE, None, None)
+        assert emb["usable"] is True
+        assert emb["confidence"] == "low-medium"  # 0.25 + 0.05
+        assert emb["score"] == _upload_score(signals) < 0.1
+
+
+SIGNATURE_META = {"score": 0.97, "confidence": "high", "signature_hits": ["EXIF Software tag references 'midjourney'"]}
+CAMERA_META = {"score": 0.15, "confidence": "low-medium", "camera_fields_present": ["Make", "Model", "FNumber"]}
+NEUTRAL_FILE_META = {"score": 0.5, "confidence": "low"}
+TINY = {"width_px": 48, "height_px": 48, "pixel_count": 2304}
+
+
+class TestEmbeddedImageFileMetadata:
+    """The embedded image's own file metadata is folded in with
+    scoring.combine, exactly as for an upload."""
+
+    def test_no_metadata_leaves_the_pixel_score(self):
+        base = document.score_embedded_image(full_signals(0.4), EMBEDDED_PROFILE, None, None)
+        assert document.score_embedded_image(full_signals(0.4), EMBEDDED_PROFILE, None, None,
+                                             metadata_result=None) == base
+
+    def test_neutral_metadata_does_not_change_the_score(self):
+        result = document.score_embedded_image(full_signals(0.4), EMBEDDED_PROFILE, None, None,
+                                               metadata_result=NEUTRAL_FILE_META)
+        assert result["score"] == pytest.approx(0.4)
+        assert result["metadata"] == NEUTRAL_FILE_META
+
+    def test_generator_signature_raises_to_at_least_its_score(self):
+        result = document.score_embedded_image(full_signals(0.2), EMBEDDED_PROFILE, None, None,
+                                               metadata_result=SIGNATURE_META)
+        assert result["score"] == 0.97
+        assert result["visual_score"] == pytest.approx(0.2)
+        assert result["confidence"] == "high"
+        assert result["usable"] is True
+
+    def test_generator_signature_never_lowers_stronger_pixels(self):
+        result = document.score_embedded_image(full_signals(0.99), EMBEDDED_PROFILE, None, None,
+                                               metadata_result=SIGNATURE_META)
+        assert result["score"] == pytest.approx(0.99)
+
+    def test_generator_signature_counts_even_on_an_icon_sized_raster(self):
+        # The size gate protects pixel heuristics; a signature does not
+        # depend on pixels.
+        result = document.score_embedded_image(full_signals(0.1), TINY, None, None,
+                                               metadata_result=SIGNATURE_META)
+        assert result["usable"] is True and result["confidence"] == "high"
+        assert result["score"] == 0.97
+        assert result["visual_score"] == 0.0
+
+    def test_camera_exif_nudges_like_an_upload(self):
+        result = document.score_embedded_image(full_signals(0.6), EMBEDDED_PROFILE, None, None,
+                                               metadata_result=CAMERA_META)
+        assert result["score"] == pytest.approx(0.85 * 0.6 + 0.15 * 0.15, abs=1e-4)
+        assert result["confidence"] == "medium-high"  # camera EXIF does not change the tier
+
+    def test_camera_exif_is_not_evidence_on_its_own(self):
+        result = document.score_embedded_image(full_signals(0.6), TINY, None, None,
+                                               metadata_result=CAMERA_META)
+        assert result["usable"] is False
+
+    def test_signature_on_an_embedded_image_drives_the_document(self):
+        emb = document.score_embedded_image(full_signals(0.1), EMBEDDED_PROFILE, None, None,
+                                            metadata_result=SIGNATURE_META)
+        page = document.combine_page_evidence(1, {"usable": False, "confidence": "insufficient"},
+                                              [embedded_entry(1, emb)])
+        doc = document.aggregate_pdf_pages([{"page": 1, "pdf_scoring": page}])
+        assert doc["score"] == 0.97 and doc["confidence"] == "high"
+        assert document.classify_pdf(doc["score"], doc["confidence"])[0] == "likely_ai_generated"
 
 
 # ---------------------------------------------------------------------------
@@ -944,9 +1233,10 @@ class TestCombinePageEvidence:
         assert result["confidence"] == confidence
 
     def test_low_confidence_embedded_image_cannot_drive_page_risk(self):
-        # Embedded image with a high score but only 'low' confidence
-        # (e.g. lighting-only) is retained in the response but not a candidate.
-        scoring = document.score_embedded_image({"lighting": sig(1.0)}, EMBEDDED_PROFILE)
+        # Embedded image with a high score but only 'low' confidence (a lone
+        # low-medium-confidence signal, 0.175 of the stack) is retained in
+        # the response but not a candidate.
+        scoring = document.score_embedded_image({"frequency": sig(1.0, "low-medium")}, EMBEDDED_PROFILE)
         assert scoring["usable"] is True and scoring["confidence"] == "low"
         result = document.combine_page_evidence(1, self._render(0.2), [embedded_entry(1, scoring)])
         assert result["source"] == "page_render"
@@ -1400,6 +1690,18 @@ class TestClassifyPdf:
 # ---------------------------------------------------------------------------
 
 
+class TestStrongBandGuard:
+    def test_low_medium_page_at_its_maximum_score_is_not_likely(self):
+        # No reliability shrink any more: two weak but agreeing signals reach
+        # 1.0 on a low-medium page (frequency low-medium 0.175 + noise low
+        # 0.20 = 0.375). Only the tier guard keeps it out of "likely".
+        signals = {"frequency": sig(1.0, "low-medium"), "noise": sig(1.0, "low")}
+        page = document.score_pdf_page(signals, IMAGE_PAGE)
+        assert page["confidence"] == "low-medium"
+        assert page["score"] == 1.0
+        assert document.classify_pdf(page["score"], page["confidence"])[0] == "suspicious_raster_content"
+
+
 class TestEndToEndComposition:
     def test_tiny_suspicious_embedded_image_on_text_page_drives_document(self):
         """A 1%-coverage, 400x300 AI-looking raster on an otherwise native
@@ -1446,26 +1748,29 @@ class TestEndToEndComposition:
         assert result["usable_pages"] == 0
         assert document.classify_pdf(result["score"], result["confidence"])[0] == "insufficient_visual_evidence"
 
-    def test_noise_only_evidence_on_every_page_is_shrunk_consistently(self):
-        # Pages where only the noise signal is valid: each page is shrunk by
-        # 0.45/0.55, and the worst page still wins.
+    def test_noise_only_evidence_on_every_page_is_capped_consistently(self):
+        # Pages where only the noise signal is valid: each is scored like a
+        # single-signal upload (capped at 0.60), and the worst page still wins.
         pages = [
             build_page(1, {"noise": sig(0.30)}, IMAGE_PAGE),
             build_page(2, {"noise": sig(1.00)}, IMAGE_PAGE),
         ]
         result = document.aggregate_pdf_pages(pages)
         assert result["worst_page"] == 2
-        assert result["score"] == 0.8182
+        assert result["score"] == CAP
         assert result["confidence"] == "medium"
         assert [f["page"] for f in result["flagged_pages"]] == [2]
-        assert pages[0]["pdf_scoring"]["score"] == pytest.approx(0.30 * NOISE_ONLY_RELIABILITY, abs=1e-4)
+        assert pages[0]["pdf_scoring"]["score"] == pytest.approx(0.30, abs=1e-4)
+        # Single-signal evidence cannot reach the strongest band.
+        assert document.classify_pdf(result["score"], result["confidence"])[0] == "suspicious_raster_content"
 
     def test_mixed_page_with_dominant_image_is_scored_with_reduced_signal_set(self):
         profile = {"content_type": "mixed_document", "image_area_fraction": 0.75}
         page = build_page(1, full_signals(0.9), profile)
         render = page["page_render_scoring"]
         assert used_signals(render) == {"noise", "gradients"}
-        assert render["effective_weight_sum"] == pytest.approx(0.80)
+        assert render["effective_weight_sum"] == pytest.approx(0.65)
+        assert render["confidence"] == "medium-high"
         assert render["score"] == pytest.approx(0.9)
         assert page["pdf_scoring"]["usable"] is True
         result = document.aggregate_pdf_pages([page])

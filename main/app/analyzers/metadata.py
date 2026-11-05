@@ -25,17 +25,21 @@ Two very different kinds of evidence live here:
 from __future__ import annotations
 
 import io
-import re
 
 from PIL import Image
 from PIL.ExifTags import TAGS
 
-KNOWN_GENERATOR_SOFTWARE = [
-    "midjourney", "dall-e", "dalle", "adobe firefly", "firefly",
-    "nightcafe", "leonardo.ai", "leonardo ai", "stable diffusion",
-    "comfyui", "automatic1111", "invokeai", "runwayml", "ideogram",
-    "playground ai", "flux", "recraft", "seedream", "nano banana",
-]
+from app.analyzers.document import AI_GENERATOR_TERMS, find_generator_references
+
+# One list and one matcher for every provenance check (PNG chunks, EXIF
+# Software, the PDF Info dictionary here and in document.py), so the same
+# file cannot get different verdicts per path. Terms match as whole tokens,
+# case-insensitively: bare substrings turned "reflux", "InfluxData",
+# "Dallesandro" and "Flux de tresorerie" into generator hits, and the bare
+# words "flux", "dalle" and "firefly" are not listed at all (ordinary
+# English/French/Italian words; the products are "FLUX.1", "DALL-E",
+# "Adobe Firefly"). See document.AI_GENERATOR_TERMS.
+KNOWN_GENERATOR_SOFTWARE = AI_GENERATOR_TERMS
 
 
 EXIF_SUB_IFD_TAG = 0x8769  # "ExifOffset" — pointer from IFD0 to the Exif sub-IFD
@@ -81,9 +85,8 @@ def _scan_png_text_chunks(img: Image.Image) -> list[str]:
         val_str = str(value)
         if key_l in ("parameters", "prompt", "workflow"):
             hits.append(f"PNG text chunk '{key}' present (generator metadata)")
-        for name in KNOWN_GENERATOR_SOFTWARE:
-            if name in val_str.lower() or name in key_l:
-                hits.append(f"PNG text chunk '{key}' references '{name}'")
+        for name in find_generator_references(f"{key}\n{val_str}"):
+            hits.append(f"PNG text chunk '{key}' references '{name}'")
     return hits
 
 
@@ -102,9 +105,8 @@ def analyze(image_bytes: bytes) -> dict:
 
     exif = _get_exif(img)
     software = str(exif.get("Software", ""))
-    for name in KNOWN_GENERATOR_SOFTWARE:
-        if name in software.lower():
-            signature_hits.append(f"EXIF Software tag references '{name}'")
+    for name in find_generator_references(software):
+        signature_hits.append(f"EXIF Software tag references '{name}'")
 
     if signature_hits:
         return {
@@ -147,10 +149,9 @@ def analyze_pdf_document(pdf_fields: dict[str, str]) -> dict:
     """
     signature_hits = []
     for field, value in pdf_fields.items():
-        value_l = str(value).lower()
-        for name in KNOWN_GENERATOR_SOFTWARE:
-            if name in value_l:
-                signature_hits.append(f"PDF metadata field '{field}' references '{name}'")
+        # Same "field: value" text document.analyze_pdf_metadata matches.
+        for name in find_generator_references(f"{field}: {value}"):
+            signature_hits.append(f"PDF metadata field '{field}' references '{name}'")
 
     if signature_hits:
         return {

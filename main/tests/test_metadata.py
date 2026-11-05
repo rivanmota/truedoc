@@ -219,11 +219,29 @@ class TestAnalyzeExifSoftwareTag:
         assert result["signature_hits"] == ["EXIF Software tag references 'midjourney'"]
         assert "explicit generator metadata found" in result["note"]
 
-    @pytest.mark.parametrize("name", KNOWN_GENERATOR_SOFTWARE)
+    @pytest.mark.parametrize("name", [n for n in KNOWN_GENERATOR_SOFTWARE if n.isascii()])
     def test_every_listed_generator_name_is_detected(self, name):
+        # EXIF Software is an ASCII field; non-ASCII names ("dall·e") cannot
+        # be stored in it and are covered through PNG text chunks below.
         result = analyze(make_image("JPEG", exif={Tag.Software: name}))
         assert_image_signature(result)
         assert f"EXIF Software tag references '{name}'" in result["signature_hits"]
+
+    @pytest.mark.parametrize("name", [n for n in KNOWN_GENERATOR_SOFTWARE if not n.isascii()])
+    def test_non_ascii_names_are_detected_in_png_text(self, name):
+        result = analyze(make_image("PNG", png_text={"Software": name}))
+        assert_image_signature(result)
+        assert f"PNG text chunk 'Software' references '{name}'" in result["signature_hits"]
+
+    @pytest.mark.parametrize("software", ["Reflux Imaging 2.1", "InfluxData Grafana export",
+                                          "Firefly Print Server", "Dallesandro Photo", "Fluxus"])
+    def test_ordinary_words_are_not_generator_names(self, software):
+        # Whole-token matching shared with document.py: substrings inside
+        # ordinary words, and the bare words "flux"/"dalle"/"firefly", are
+        # not provenance.
+        result = analyze(make_image("JPEG", exif={Tag.Software: software}))
+        assert result["confidence"] != "high"
+        assert "signature_hits" not in result
 
     @pytest.mark.parametrize(
         "software, expected_name",
@@ -235,21 +253,18 @@ class TestAnalyzeExifSoftwareTag:
             ("Ideogram 2.0 (web)", "ideogram"),
         ],
     )
-    def test_matching_is_case_insensitive_and_substring_based(self, software, expected_name):
+    def test_matching_is_case_insensitive_and_whole_token_based(self, software, expected_name):
         result = analyze(make_image("JPEG", exif={Tag.Software: software}))
         assert_image_signature(result)
         assert f"EXIF Software tag references '{expected_name}'" in result["signature_hits"]
 
-    def test_overlapping_list_entries_each_produce_a_hit(self):
-        # "adobe firefly" and "firefly" are both listed; the substring check
-        # fires once per entry rather than collapsing them. Pin that so a
-        # future de-dup is a deliberate change, not an accident.
+    def test_product_name_produces_exactly_one_hit(self):
+        # Deliberate change (this test used to pin two hits, for "adobe
+        # firefly" and the bare word "firefly"): bare "firefly" is no longer
+        # a generator term, so the product name yields one hit.
         result = analyze(make_image("JPEG", exif={Tag.Software: "Adobe Firefly"}))
         assert_image_signature(result)
-        assert result["signature_hits"] == [
-            "EXIF Software tag references 'adobe firefly'",
-            "EXIF Software tag references 'firefly'",
-        ]
+        assert result["signature_hits"] == ["EXIF Software tag references 'adobe firefly'"]
 
     def test_software_tag_on_png_exif_chunk_is_detected(self):
         # PNG can carry EXIF via an eXIf chunk; the Software check is not
@@ -499,10 +514,11 @@ class TestAnalyzePngTextChunks:
             make_image("PNG", png_text={"parameters": "Steps: 20, Model: stable diffusion 1.5 via automatic1111"})
         )
         assert_image_signature(result)
+        # Generator names are reported in the shared matcher's sorted order.
         assert result["signature_hits"] == [
             "PNG text chunk 'parameters' present (generator metadata)",
-            "PNG text chunk 'parameters' references 'stable diffusion'",
             "PNG text chunk 'parameters' references 'automatic1111'",
+            "PNG text chunk 'parameters' references 'stable diffusion'",
         ]
 
     def test_compressed_ztxt_chunk_is_scanned(self):
@@ -791,10 +807,22 @@ class TestAnalyzePdfDocument:
 
     def test_one_field_mentioning_two_generators_reports_both(self):
         result = analyze_pdf_document({"Subject": "Midjourney vs Ideogram comparison"})
+        # Sorted order, as reported by the shared matcher.
         assert result["signature_hits"] == [
-            "PDF metadata field 'Subject' references 'midjourney'",
             "PDF metadata field 'Subject' references 'ideogram'",
+            "PDF metadata field 'Subject' references 'midjourney'",
         ]
+
+    @pytest.mark.parametrize("fields", [
+        {"Title": "Flux de tresorerie 2024"},
+        {"Subject": "Pose de dalles - reflux - InfluxData export"},
+        {"Author": "Maria Dallesandro"},
+        {"Producer": "Firefly Print Server"},
+    ])
+    def test_ordinary_words_are_not_provenance(self, fields):
+        result = analyze_pdf_document(fields)
+        assert result["confidence"] == "low"
+        assert result["score"] == NEUTRAL_SCORE
 
     def test_non_string_values_are_coerced_not_crashed(self):
         # pdf_utils promises str values, but be defensive: None/ints must
@@ -838,7 +866,18 @@ class TestImageVsPdfWeighting:
         assert neutral["confidence"] == "low"
 
     def test_both_paths_share_the_same_generator_list(self):
-        # A name added for one path must be honoured by the other.
+        # A name added for one path must be honoured by the other. EXIF is
+        # ASCII-only, so non-ASCII names go through a PNG text chunk.
         for name in KNOWN_GENERATOR_SOFTWARE:
-            assert analyze(make_image("JPEG", exif={Tag.Software: name}))["confidence"] == "high"
+            image = (make_image("JPEG", exif={Tag.Software: name}) if name.isascii()
+                     else make_image("PNG", png_text={"Software": name}))
+            assert analyze(image)["confidence"] == "high"
             assert analyze_pdf_document({"Title": name})["confidence"] == "high"
+
+    def test_list_and_matcher_are_the_ones_document_py_uses(self):
+        from app.analyzers import document
+        assert KNOWN_GENERATOR_SOFTWARE is document.AI_GENERATOR_TERMS
+        for fields in ({"Title": "reflux study"}, {"Producer": "InfluxData"}, {"Author": "Dallesandro"},
+                       {"Creator": "Midjourney"}, {"Creator": "InvokeAI"}, {"Creator": "ChatGPT"},
+                       {"Producer": "Adobe Firefly 3"}, {"Creator": "FLUX.1 [dev]"}, {"Title": "Flux de tresorerie"}):
+            assert analyze_pdf_document(fields)["confidence"] == document.analyze_pdf_metadata(fields)["confidence"]

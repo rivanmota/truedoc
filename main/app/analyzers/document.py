@@ -5,9 +5,24 @@ vector paths and fonts are rasterized by PDFium, which creates clean edges,
 flat regions and frequency patterns that can look "AI-like" to photo-oriented
 forensic analyzers.
 
-This module decides when photo-forensic signals are applicable to a PDF page,
-ignores unavailable/low-value signals, and aggregates page evidence without
-letting a single weak page dominate the entire document.
+This module decides when photo-forensic signals are applicable to a PDF page
+and which evidence is reliable enough to drive a document verdict, and it
+aggregates page evidence without letting a single weak page dominate the
+entire document.
+
+The *combination* of signals is not PDF-specific: page renders and embedded
+rasters are scored by ``app.scoring.visual_score``, the same combiner (same
+weights, confidence factors, no-portrait redistribution, single-signal cap
+and context factors) that scores a directly uploaded PNG/JPEG. An embedded
+image therefore gets the same score it would get as an upload. What this
+module adds on top is PDF-specific:
+  - which signals may run on a rendered page (content type, image-area
+    fraction), and that flat fills and icon-sized rasters are not evidence;
+  - no substantive evidence => "insufficient" (score 0, unusable), where a
+    direct upload would report 0.5 "inconclusive": inside a document, a
+    raster that says nothing must not add risk;
+  - confidence tiers from how much of the evidence stack was measured,
+    which decide what may drive the document verdict.
 """
 from __future__ import annotations
 
@@ -18,21 +33,28 @@ from typing import Iterable
 
 import numpy as np
 
-# Separate weights for image-dominant PDF pages. These do not change the
-# normal PNG/JPEG scoring path.
-PDF_SCAN_WEIGHTS = {
-    "frequency": 0.05,
-    "noise": 0.45,
-    "gradients": 0.35,
-    "lighting": 0.15,
-}
+from app import scoring
 
-CONFIDENCE_FACTOR = {
-    "high": 1.0,
-    "medium": 1.0,
-    "low-medium": 0.60,
-    "low": 0.20,
-}
+# PDF evidence is weighted exactly like a direct image upload. These names
+# are kept for callers that read them; they are the image path's objects.
+PDF_SCAN_WEIGHTS = scoring.WEIGHTS
+CONFIDENCE_FACTOR = scoring.CONFIDENCE_FACTOR
+
+# Confidence tiers of a page render / embedded raster, from its evidence
+# weight: the sum of base weight x confidence factor over the signals that
+# could be measured (before the no-portrait redistribution and context
+# factors, so it says how much of the stack was *measured*). With lighting
+# always "low": all four signals 0.95, noise+frequency+lighting 0.70,
+# frequency+gradients+lighting 0.55, noise alone 0.40, frequency+lighting
+# 0.30, frequency alone 0.25, lighting alone 0.05.
+TIER_MEDIUM_HIGH = 0.65
+TIER_MEDIUM = 0.40
+TIER_LOW_MEDIUM = 0.20
+USABLE_MIN_WEIGHT = 0.15
+
+# Signals measured on individual pixels (as opposed to lighting, which uses
+# smoothed gradient directions over a coarse grid).
+PIXEL_LEVEL_SIGNALS = frozenset({"frequency", "noise", "gradients"})
 
 # Page types on which whole-page photo forensics may run at all. Everything
 # else (native/vector/sparse text, unknown or future types) is treated as
@@ -166,7 +188,7 @@ def _is_flat_fill(profile: dict) -> bool:
 
 
 def _signal_available(name: str, result: dict, page_profile: dict) -> bool:
-    if _finite_score(result) is None:
+    if result.get("applicable") is False or _finite_score(result) is None:
         return False
 
     note = str(result.get("note", "")).lower()
@@ -186,6 +208,15 @@ def _signal_available(name: str, result: dict, page_profile: dict) -> bool:
     if _is_flat_fill(page_profile):
         return False
 
+    # Pixel-level signals on a render that our renderer had to resample
+    # (the raster could not be drawn 1:1, see pdf_utils.plan_page_render)
+    # would measure the renderer: the frequency knee detects its upscaling,
+    # interpolation reshapes the noise floor and smooths skin texture.
+    # Profiles without render information (hand-built, older callers) are
+    # not gated here; the pipeline always sets it.
+    if name in PIXEL_LEVEL_SIGNALS and page_profile.get("render_resampled") is True:
+        return False
+
     if content_type == "mixed_document":
         # Whole-page visual metrics are contaminated by rasterized text/vector
         # content unless images dominate most of the page.
@@ -200,91 +231,127 @@ def _signal_available(name: str, result: dict, page_profile: dict) -> bool:
     return True
 
 
-def score_pdf_page(signals: dict, page_profile: dict) -> dict:
-    """Returns a PDF-aware score for one rasterized page.
+def _tier(weight: float) -> str:
+    # Tiers compare the 4-decimal-rounded weight so floating-point
+    # accumulation (0.25 + 0.40 + 0.05 -> 0.7000000000000001) cannot move an
+    # element across a boundary; the rounded value is also what is reported.
+    if weight >= TIER_MEDIUM_HIGH:
+        return "medium-high"
+    if weight >= TIER_MEDIUM:
+        return "medium"
+    if weight >= TIER_LOW_MEDIUM:
+        return "low-medium"
+    return "low"
 
-    Unavailable signals contribute no weight. Low-confidence signals are
-    strongly downweighted. The normalized score is additionally shrunk when
-    only a small fraction of the expected evidence is usable, preventing a
-    single weak signal from creating a high page score.
+
+def _score_available_signals(
+    signals: dict,
+    available: dict,
+    buckets: dict | None,
+    model,
+) -> tuple[dict, float, float, dict]:
+    """Runs the image-path combiner on the signals the PDF gates allow.
+
+    Returns (contributions, score, evidence weight, combiner diagnostics).
+    Gated-out signals are passed to the combiner as not applicable, so the
+    no-portrait redistribution and single-signal cap see exactly what was
+    measured.
     """
+    gated = {}
     contributions = {}
-    numerator = 0.0
-    effective_weight_sum = 0.0
-    total_base_weight = sum(PDF_SCAN_WEIGHTS.values())
-
-    for name, base_weight in PDF_SCAN_WEIGHTS.items():
+    evidence_weight = 0.0
+    for name, base_weight in scoring.WEIGHTS.items():
         result = signals.get(name) or {}
-        available = _signal_available(name, result, page_profile)
-        confidence = str(result.get("confidence", "low"))
-        confidence_factor = CONFIDENCE_FACTOR.get(confidence, 0.0)
-
-        if not available:
+        if not available[name]:
+            gated[name] = {"score": None, "confidence": "unavailable", "applicable": False}
             contributions[name] = {
                 "used": False,
-                "reason": "not applicable or unavailable for this PDF page",
+                "reason": "not applicable or unavailable for this PDF element",
                 "effective_weight": 0.0,
             }
             continue
-
-        score = float(np.clip(_finite_score(result), 0.0, 1.0))
-        effective_weight = base_weight * confidence_factor
-        numerator += score * effective_weight
-        effective_weight_sum += effective_weight
+        confidence = str(result.get("confidence", "low"))
+        weight = base_weight * CONFIDENCE_FACTOR.get(confidence, scoring.UNKNOWN_CONFIDENCE_FACTOR)
+        evidence_weight += weight
+        gated[name] = {**result, "score": float(np.clip(_finite_score(result), 0.0, 1.0))}
         contributions[name] = {
             "used": True,
-            "score": round(score, 4),
+            "score": round(gated[name]["score"], 4),
             "confidence": confidence,
-            "effective_weight": round(effective_weight, 4),
+            "effective_weight": round(weight, 4),
         }
 
-    if effective_weight_sum <= 1e-9:
+    score, diagnostics = scoring.visual_score(gated, buckets, model)
+    diagnostics = {**diagnostics, "context_buckets": dict(buckets) if buckets else None}
+    for name, contribution in contributions.items():
+        if contribution["used"]:
+            contribution["combined_weight"] = diagnostics["effective_weights"][name]
+    return contributions, float(score), evidence_weight, diagnostics
+
+
+def _scored_element(contributions, score, evidence_weight, diagnostics, note, content_type=None) -> dict:
+    tier_weight = round(evidence_weight, 4)
+    result = {
+        "score": round(score, 4),
+        # Before the single-signal cap. (There is no reliability shrink any
+        # more: thin evidence is handled by the image path's cap.)
+        "raw_normalized_score": diagnostics["uncapped_score"],
+        "confidence": _tier(tier_weight),
+        "usable": tier_weight >= USABLE_MIN_WEIGHT,
+        "effective_weight_sum": tier_weight,
+        "evidence_coverage": round(float(np.clip(evidence_weight / sum(scoring.WEIGHTS.values()), 0.0, 1.0)), 4),
+        "contributions": contributions,
+        "combiner": {
+            k: diagnostics[k]
+            for k in ("single_signal_cap_applied", "gradients_weight_redistributed_to",
+                      "context_buckets", "context_weighting", "context_multipliers", "context_discount")
+        },
+        "note": note,
+    }
+    if content_type is not None:
+        result["content_type"] = content_type
+    return result
+
+
+def score_pdf_page(
+    signals: dict,
+    page_profile: dict,
+    buckets: dict | None = None,
+    model=scoring._DEFAULT_MODEL,
+) -> dict:
+    """Returns a PDF-aware score for one rasterized page.
+
+    Signals the page type does not support are gated out; the rest are
+    combined exactly as for an uploaded image (``app.scoring``), including
+    context factors when ``buckets`` (the page render's ``app.context``
+    buckets) is given. A page with no substantive evidence is insufficient.
+    """
+    available = {
+        name: _signal_available(name, signals.get(name) or {}, page_profile)
+        for name in scoring.WEIGHTS
+    }
+    contributions, score, evidence_weight, diagnostics = _score_available_signals(
+        signals, available, buckets, model
+    )
+    content_type = page_profile.get("content_type", "unknown")
+
+    if diagnostics["insufficient_evidence"]:
         return {
             "score": 0.0,
             "confidence": "insufficient",
             "usable": False,
             "evidence_coverage": 0.0,
-            "content_type": page_profile.get("content_type", "unknown"),
+            "content_type": content_type,
             "contributions": contributions,
             "note": "photo-forensic analysis is not applicable/reliable on this rendered PDF page",
         }
 
-    normalized = numerator / effective_weight_sum
-
-    # Evidence coverage measures how much of the intended photo-forensics stack
-    # was actually available. Require roughly noise + one other useful signal
-    # before allowing the page score to express full confidence.
-    evidence_coverage = float(np.clip(effective_weight_sum / total_base_weight, 0.0, 1.0))
-    reliability = float(np.clip(effective_weight_sum / 0.55, 0.0, 1.0))
-    score = float(np.clip(normalized * reliability, 0.0, 1.0))
-
-    # Compare tiers on the 4-decimal-rounded sum. Base weights such as
-    # 0.05 + 0.35 accumulate to 0.39999999999999997 in floating point, which
-    # would otherwise drop a page that nominally sits on a tier boundary into
-    # the lower tier. The rounded value is also what the response reports.
-    tier_weight = round(effective_weight_sum, 4)
-    if tier_weight >= 0.65:
-        confidence = "medium-high"
-    elif tier_weight >= 0.40:
-        confidence = "medium"
-    elif tier_weight >= 0.20:
-        confidence = "low-medium"
-    else:
-        confidence = "low"
-
-    return {
-        "score": round(score, 4),
-        "raw_normalized_score": round(float(normalized), 4),
-        "confidence": confidence,
-        "usable": tier_weight >= 0.15,
-        "effective_weight_sum": tier_weight,
-        "evidence_coverage": round(evidence_coverage, 4),
-        "content_type": page_profile.get("content_type", "unknown"),
-        "contributions": contributions,
-        "note": "PDF-aware score: unavailable signals are ignored and native text/vector rendering is not treated as camera evidence",
-    }
-
-
+    return _scored_element(
+        contributions, score, evidence_weight, diagnostics,
+        "PDF-aware score: the image-path combiner over the signals this page type supports; "
+        "native text/vector rendering is not treated as camera evidence",
+        content_type=content_type,
+    )
 
 
 def unavailable_embedded_signals(reason: str) -> dict:
@@ -312,20 +379,65 @@ def unusable_embedded_image_score(image_profile: dict, reason: str) -> dict:
 
 
 def _embedded_signal_available(result: dict) -> bool:
-    if _finite_score(result) is None:
+    if result.get("applicable") is False or _finite_score(result) is None:
         return False
     note = str(result.get("note", "")).lower()
     return not any(phrase in note for phrase in _UNAVAILABLE_PHRASES)
 
 
-def score_embedded_image(signals: dict, image_profile: dict) -> dict:
+def score_embedded_image(
+    signals: dict,
+    image_profile: dict,
+    buckets: dict | None = None,
+    model=scoring._DEFAULT_MODEL,
+    metadata_result: dict | None = None,
+) -> dict:
     """Score one raster image extracted from a PDF page.
+
+    The raster is scored exactly as if it had been uploaded on its own
+    (``app.scoring``, including context factors when ``buckets`` is given),
+    after the PDF gates below. No substantive evidence => unusable.
+
+    ``metadata_result`` is ``metadata.analyze`` of the image's own file
+    (the raw JPEG stream of a DCTDecode image; other encodings carry no
+    file metadata). It is folded in with ``scoring.combine`` as for an
+    upload: camera EXIF nudges the score down, and a generator signature
+    makes the raster high-confidence evidence of at least its own score,
+    even when the pixels alone are not usable (a signature does not depend
+    on image size or content).
 
     Page coverage is deliberately *not* used as a negative factor: a fraudulent
     signature/photo/receipt can occupy 1% of the page and still matter. Pixel
     dimensions do matter because these forensic heuristics become unstable on
     icons and very small raster assets.
     """
+    result = _score_embedded_pixels(signals, image_profile, buckets, model)
+    if not metadata_result:
+        return result
+    confidence = metadata_result.get("confidence")
+    if confidence not in ("high", "low-medium"):
+        return {**result, "metadata": metadata_result}
+    if confidence == "low-medium" and not result["usable"]:
+        # Camera EXIF only nudges measured evidence; it is not evidence alone.
+        return {**result, "metadata": metadata_result}
+
+    visual = float(result["score"]) if result["usable"] else 0.0
+    combined = round(scoring.combine(visual, metadata_result), 4)
+    out = {**result, "visual_score": round(visual, 4), "score": combined, "metadata": metadata_result}
+    if confidence == "high":
+        out.update({"usable": True, "confidence": "high"})
+        out["note"] = ("explicit generator metadata in the embedded image's own file; "
+                       + str(result.get("note", "")))
+    return out
+
+
+def _score_embedded_pixels(
+    signals: dict,
+    image_profile: dict,
+    buckets: dict | None = None,
+    model=scoring._DEFAULT_MODEL,
+) -> dict:
+    """Pixel evidence of one extracted raster (see ``score_embedded_image``)."""
     width_px = int(image_profile.get("width_px", 0))
     height_px = int(image_profile.get("height_px", 0))
     pixel_count = int(image_profile.get("pixel_count", width_px * height_px))
@@ -352,74 +464,26 @@ def score_embedded_image(signals: dict, image_profile: dict) -> dict:
             ),
         )
 
-    contributions = {}
-    numerator = 0.0
-    effective_weight_sum = 0.0
-    total_base_weight = sum(PDF_SCAN_WEIGHTS.values())
-
-    for name, base_weight in PDF_SCAN_WEIGHTS.items():
-        result = signals.get(name) or {}
-        available = _embedded_signal_available(result)
-        confidence = str(result.get("confidence", "low"))
-        confidence_factor = CONFIDENCE_FACTOR.get(confidence, 0.0)
-
-        if not available or confidence_factor <= 0:
-            contributions[name] = {
-                "used": False,
-                "reason": "unavailable or insufficient-confidence signal",
-                "effective_weight": 0.0,
-            }
-            continue
-
-        score = float(np.clip(_finite_score(result), 0.0, 1.0))
-        effective_weight = base_weight * confidence_factor
-        numerator += score * effective_weight
-        effective_weight_sum += effective_weight
-        contributions[name] = {
-            "used": True,
-            "score": round(score, 4),
-            "confidence": confidence,
-            "effective_weight": round(effective_weight, 4),
-        }
-
-    if effective_weight_sum <= 1e-9:
+    available = {
+        name: _embedded_signal_available(signals.get(name) or {})
+        for name in scoring.WEIGHTS
+    }
+    contributions, score, evidence_weight, diagnostics = _score_available_signals(
+        signals, available, buckets, model
+    )
+    if diagnostics["insufficient_evidence"]:
         return unusable_embedded_image_score(
             image_profile,
             reason="embedded raster had no usable forensic signals",
         )
 
-    normalized = numerator / effective_weight_sum
-    evidence_coverage = float(np.clip(effective_weight_sum / total_base_weight, 0.0, 1.0))
-
-    # Require at least roughly noise plus one corroborating signal before the
-    # extracted image can express its full score.
-    reliability = float(np.clip(effective_weight_sum / 0.55, 0.0, 1.0))
-    score = float(np.clip(normalized * reliability, 0.0, 1.0))
-
-    # See score_pdf_page: tier boundaries are compared on the rounded sum so
-    # floating-point accumulation of the base weights cannot demote a tier.
-    tier_weight = round(effective_weight_sum, 4)
-    if tier_weight >= 0.65:
-        confidence = "medium-high"
-    elif tier_weight >= 0.40:
-        confidence = "medium"
-    elif tier_weight >= 0.20:
-        confidence = "low-medium"
-    else:
-        confidence = "low"
-
-    usable = tier_weight >= 0.15
-    return {
-        "score": round(score, 4),
-        "raw_normalized_score": round(float(normalized), 4),
-        "confidence": confidence,
-        "usable": usable,
-        "effective_weight_sum": tier_weight,
-        "evidence_coverage": round(evidence_coverage, 4),
-        "image_profile": image_profile,
-        "contributions": contributions,
-        "note": "embedded-image score; page coverage does not dilute a reliable suspicious raster element",
-    }
+    result = _scored_element(
+        contributions, score, evidence_weight, diagnostics,
+        "embedded-image score, identical to a direct upload of the same raster; "
+        "page coverage does not dilute a reliable suspicious raster element",
+    )
+    result["image_profile"] = image_profile
+    return result
 
 
 def combine_page_evidence(
@@ -613,8 +677,9 @@ def not_applicable_signals(page_profile: dict) -> dict:
     }
 
 # Confidence tiers allowed to carry the strongest visual-evidence band. A
-# "low-medium" page (well under half the evidence stack) can still reach
-# ~0.71 after the reliability shrink; that must read as suspicious, not likely.
+# "low-medium" page (well under half the evidence stack) can still reach 1.0
+# when two weak signals agree (there is no reliability shrink); that must
+# read as suspicious, not likely.
 STRONG_BAND_CONFIDENCES = frozenset({"medium", "medium-high", "high"})
 
 

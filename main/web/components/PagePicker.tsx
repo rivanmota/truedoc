@@ -1,6 +1,6 @@
 "use client";
 
-import { scoreColor } from "@/lib/verdict";
+import { SIGNAL_VERDICT_COLOR, SIGNAL_VERDICT_LABEL, signalVerdictFor } from "@/lib/verdict";
 import type { PageResult } from "@/lib/types";
 
 export function PagePicker({
@@ -17,12 +17,13 @@ export function PagePicker({
   return (
     <div>
       <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.15em] text-dimmer">
-        {pages.length} pages scanned — showing page-level breakdown for:
+        {pages.length} pages · evidence for:
       </p>
       <div className="flex flex-wrap gap-2">
         {pages.map((p) => {
           const isSelected = p.page === selected;
-          const color = scoreColor(p.ai_generated);
+          const verdict = signalVerdictFor(p.ai_generated);
+          const color = SIGNAL_VERDICT_COLOR[verdict];
           return (
             <button
               key={p.page}
@@ -34,11 +35,16 @@ export function PagePicker({
                   : "border-line bg-panel text-dim hover:text-paper"
               }`}
             >
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: color }}
+                aria-hidden="true"
+              />
               <span>
                 Page {p.page}
-                {p.page === worstPage && <span className="text-dimmer"> ·highest</span>}
+                {p.page === worstPage && <span className="text-dimmer"> · key page</span>}
               </span>
-              <span style={{ color }}>{Math.round(p.ai_generated * 100)}%</span>
+              <span className="sr-only">{SIGNAL_VERDICT_LABEL[verdict]}</span>
             </button>
           );
         })}

@@ -3,6 +3,10 @@ export type Confidence = "high" | "medium" | "low-medium" | "low";
 export interface SignalResult {
   score: number;
   confidence: Confidence;
+  /** false when the signal does not apply to this input (e.g. gradients on
+   * a non-portrait, noise on a JPEG-reshaped floor). Its score is then a
+   * placeholder that carried no weight in ai_generated. */
+  applicable?: boolean;
   note?: string;
   [key: string]: unknown;
 }

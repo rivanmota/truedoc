@@ -1,0 +1,150 @@
+{
+  "version": 2,
+  "weighting": "dynamic: compression+scale",
+  "dimensions": [
+    "compression",
+    "scale"
+  ],
+  "generated": "2026-11-04T03:57:11",
+  "generated_by": "eval/calibrate_weights.py",
+  "method": "factor = (retention - false alarm) in bucket / overall; static base weights; absolute down-weighting (see app/main.py _visual_score)",
+  "multipliers": {
+    "frequency": {
+      "compression": {
+        "lossless": 1.119,
+        "jpeg_history": 1.3333,
+        "jpeg_high": 0.9934,
+        "jpeg_mid": 0.9934,
+        "jpeg_low": 0.8325
+      }
+    },
+    "noise": {
+      "compression": {
+        "lossless": 1.0193,
+        "jpeg_history": 1.0,
+        "jpeg_high": 0.8599,
+        "jpeg_mid": 0.8599,
+        "jpeg_low": 0.8599
+      },
+      "scale": {
+        "native": 1.153,
+        "upscaled": 0.916
+      }
+    },
+    "gradients": {
+      "compression": {
+        "lossless": 0.9953,
+        "jpeg_history": 1.103,
+        "jpeg_high": 0.9953,
+        "jpeg_mid": 0.9953,
+        "jpeg_low": 0.9648
+      },
+      "scale": {
+        "native": 1.0983,
+        "upscaled": 0.8765
+      }
+    },
+    "lighting": {
+      "compression": {
+        "lossless": 1.0862,
+        "jpeg_history": 0.5729,
+        "jpeg_high": 1.0086,
+        "jpeg_mid": 1.0086,
+        "jpeg_low": 1.0086
+      },
+      "scale": {
+        "native": 0.8228,
+        "upscaled": 1.3107
+      }
+    }
+  },
+  "confound_tv": {
+    "compression": 0.0139,
+    "size": 0.4618,
+    "scale": 0.0203,
+    "color": 0.3542
+  },
+  "held_out": {
+    "static": {
+      "auc": 0.6976,
+      "tpr": 0.463,
+      "fpr": 0.092,
+      "balanced_accuracy": 0.6855,
+      "ai_likely_ai": 0.0741,
+      "real_likely_ai": 0.0,
+      "n_ai": 108,
+      "n_real": 576
+    },
+    "dynamic: compression": {
+      "auc": 0.6962,
+      "tpr": 0.4537,
+      "fpr": 0.0868,
+      "balanced_accuracy": 0.6834,
+      "ai_likely_ai": 0.0741,
+      "real_likely_ai": 0.0,
+      "n_ai": 108,
+      "n_real": 576,
+      "gain_vs_static": -0.002,
+      "gain_ci95": [
+        -0.0104,
+        0.0043
+      ]
+    },
+    "dynamic: scale": {
+      "auc": 0.6973,
+      "tpr": 0.4722,
+      "fpr": 0.0972,
+      "balanced_accuracy": 0.6875,
+      "ai_likely_ai": 0.0741,
+      "real_likely_ai": 0.0,
+      "n_ai": 108,
+      "n_real": 576,
+      "gain_vs_static": 0.002,
+      "gain_ci95": [
+        -0.0061,
+        0.011
+      ]
+    },
+    "dynamic: compression+scale": {
+      "auc": 0.6957,
+      "tpr": 0.4722,
+      "fpr": 0.092,
+      "balanced_accuracy": 0.6901,
+      "ai_likely_ai": 0.0741,
+      "real_likely_ai": 0.0,
+      "n_ai": 108,
+      "n_real": 576,
+      "gain_vs_static": 0.0046,
+      "gain_ci95": [
+        -0.0026,
+        0.013
+      ]
+    }
+  },
+  "sources": {
+    "generated": [
+      "fireplace-generated",
+      "ai-generated",
+      "ai-retouched"
+    ],
+    "genuine": [
+      "human",
+      "astronaut",
+      "brick",
+      "camera",
+      "chelsea",
+      "coffee",
+      "coins",
+      "grass",
+      "gravel",
+      "moon",
+      "motorcycle_left",
+      "motorcycle_right",
+      "rocket",
+      "china",
+      "flower",
+      "grace_hopper"
+    ]
+  },
+  "variants": 684
+}

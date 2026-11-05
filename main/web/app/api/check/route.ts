@@ -39,9 +39,12 @@ export async function POST(req: NextRequest) {
     outgoing.set("url", url.trim());
   }
 
+  // `details=true` asks the backend for the per-signal / per-page breakdown
+  // (its default response is the compact score only). The UI renders that
+  // breakdown so users can see what fed the not-true-doc likelihood.
   let backendResponse: Response;
   try {
-    backendResponse = await fetch(`${BACKEND_URL}/1.0/check.json`, {
+    backendResponse = await fetch(`${BACKEND_URL}/1.0/check.json?details=true`, {
       method: "POST",
       body: outgoing,
     });

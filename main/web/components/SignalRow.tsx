@@ -31,11 +31,14 @@ export function SignalRow({
   label: string;
   result: SignalResult;
 }) {
-  const { score, confidence, note, ...rest } = result;
+  const { score, confidence, applicable, note, ...rest } = result;
   const extras = Object.entries(rest).filter(
     ([, v]) => v !== null && typeof v !== "object",
   );
-  const color = scoreColor(score);
+  // A not-applicable signal carries no weight; showing its placeholder
+  // score as a bar would read as evidence.
+  const notApplicable = applicable === false;
+  const color = notApplicable ? "var(--color-dimmer, #6b7280)" : scoreColor(score);
 
   return (
     <details className="group rounded-md border border-line bg-panel open:bg-panel-raised">
@@ -48,15 +51,15 @@ export function SignalRow({
         <span className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-line">
           <span
             className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-700 ease-out"
-            style={{ width: `${Math.round(score * 100)}%`, background: color }}
+            style={{ width: notApplicable ? "0%" : `${Math.round(score * 100)}%`, background: color }}
           />
         </span>
 
         <span className="w-12 shrink-0 text-right font-mono text-sm" style={{ color }}>
-          {Math.round(score * 100)}%
+          {notApplicable ? "N/A" : `${Math.round(score * 100)}%`}
         </span>
         <span className="hidden w-24 shrink-0 text-right font-mono text-[10px] tracking-[0.08em] text-dimmer sm:block">
-          {CONFIDENCE_LABEL[confidence] ?? confidence}
+          {notApplicable ? "NOT USED" : (CONFIDENCE_LABEL[confidence] ?? confidence)}
         </span>
         <span className="shrink-0 text-dimmer transition-transform group-open:rotate-90">
           ›

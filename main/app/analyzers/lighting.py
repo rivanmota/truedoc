@@ -31,6 +31,7 @@ def analyze(gray: np.ndarray, grid: int = 6) -> dict:
         return {
             "score": 0.5,
             "confidence": "low",
+            "applicable": False,
             "note": "image too small for a grid-based lighting estimate",
         }
 
@@ -60,6 +61,7 @@ def analyze(gray: np.ndarray, grid: int = 6) -> dict:
         return {
             "score": 0.5,
             "confidence": "low",
+            "applicable": False,
             "note": "not enough textured regions to estimate lighting direction consistency",
         }
 
@@ -81,6 +83,7 @@ def analyze(gray: np.ndarray, grid: int = 6) -> dict:
     return {
         "score": round(score, 4),
         "confidence": "low",
+        "applicable": True,
         "circular_variance": round(circular_variance, 4),
         "cells_used": len(angles),
         "note": "weakest signal of the four — treat as a minor corroborating factor only, not standalone evidence",

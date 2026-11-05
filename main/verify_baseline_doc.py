@@ -56,6 +56,7 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageFilter  # noqa: E402
 
 from app import main as app_main  # noqa: E402
+from app import scoring as shared_scoring  # noqa: E402
 from app.analyzers import document  # noqa: E402
 
 SIGNAL_NAMES = ("frequency", "noise", "gradients", "lighting")
@@ -279,9 +280,11 @@ def derive_rasters(assets: dict[str, bytes]) -> dict[str, tuple[bytes, tuple[int
     put("human", center_crop_to_page_aspect(human))
     put("ai_generated", center_crop_to_page_aspect(ai))
     put("ai_retouched", center_crop_to_page_aspect(ret))
-    # Heavily smoothed copy of the AI image: removes residual noise and
-    # texture, which the noise/gradients heuristics treat as strong AI
-    # evidence. This is the "clearly worse" page.
+    # Heavily smoothed copy of the AI image. Blur erases the grain and
+    # texture the noise/gradients signals measure, so this raster carries
+    # no usable evidence: it must come out insufficient, never flagged.
+    # (Earlier detector versions read "too clean" as AI evidence and this
+    # was the "clearly worse" page.)
     put("ai_generated_blur4", center_crop_to_page_aspect(ai.filter(ImageFilter.GaussianBlur(4))))
     # Icon-sized copy: below the 64px / 16,384px gate.
     put("ai_generated_icon48", ai.resize((48, 48), Image.LANCZOS))
@@ -346,29 +349,40 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
         {
             "name": "multi_page_one_clearly_worse",
             "description": (
-                "6 pages: native text, human.jpeg, ai-retouched.png, ai-generated.png, "
-                "BLURRED ai-generated.png (page 5, expected clearly worse), native text"
+                "5 pages: native text, human.jpeg, ai-generated.png (page 3, expected worst), "
+                "BLURRED ai-generated.png (evidence erased, must not be flagged), native text"
             ),
             "pages": [
                 text_page(),
                 full_page(rasters["human"]),
-                full_page(rasters["ai_retouched"]),
                 full_page(rasters["ai_generated"]),
                 full_page(rasters["ai_generated_blur4"]),
                 text_page(),
             ],
             "info": generic_info,
-            "expect": {"worst_page": 5, "flagged_exactly": [5], "metadata_hit": False},
+            "expect": {"worst_page": 3, "flagged_exactly": [3], "metadata_hit": False},
+        },
+        {
+            "name": "every_ai_page_is_flagged",
+            "description": "4 pages: native text, human.jpeg, ai-retouched.png, ai-generated.png; both AI pages must be flagged, the real photo must not",
+            "pages": [
+                text_page(),
+                full_page(rasters["human"]),
+                full_page(rasters["ai_retouched"]),
+                full_page(rasters["ai_generated"]),
+            ],
+            "info": generic_info,
+            "expect": {"flagged_exactly": [4, 3], "metadata_hit": False},
         },
         {
             "name": "small_embedded_on_text_page",
             "description": (
-                "3 pages: native text, native text with blurred AI raster at 1/4 scale (~6% coverage), "
+                "3 pages: native text, native text with the AI raster at 1/4 scale (~6% coverage), "
                 "native text with human.jpeg at 1/4 scale"
             ),
             "pages": [
                 text_page(),
-                text_page_with(rasters["ai_generated_blur4"], 0.25),
+                text_page_with(rasters["ai_generated"], 0.25),
                 text_page_with(rasters["human"], 0.25),
             ],
             "info": generic_info,
@@ -376,10 +390,10 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
         },
         {
             "name": "coverage_independence",
-            "description": "same blurred AI raster full-page (p1) and at 1/8 scale (~1.4% coverage) on a text page (p2)",
+            "description": "same AI raster full-page (p1) and at 1/8 scale (~1.4% coverage) on a text page (p2)",
             "pages": [
-                full_page(rasters["ai_generated_blur4"]),
-                text_page_with(rasters["ai_generated_blur4"], 0.125),
+                full_page(rasters["ai_generated"]),
+                text_page_with(rasters["ai_generated"], 0.125),
             ],
             "info": generic_info,
             "expect": {"same_embedded_score_pages": (1, 2), "metadata_hit": False},
@@ -433,6 +447,9 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
                 text_page_with(rasters["human"], 0.25),
             ],
             "info": generic_info,
+            # The fills are gated out; the real photo (scored with the image-path
+            # weights: frequency + lighting, low-medium evidence) is the only
+            # reliable element and reads as real, so nothing is flagged.
             "expect": {"metadata_hit": False, "worst_page": 4, "worst_source": "embedded_image",
                        "flat_fill_pages": [1, 2, 3], "flagged_exactly": []},
         },
@@ -467,23 +484,33 @@ def validate_scoring_internals(c: Checks, group: str, label: str, scoring: dict)
         return
     contributions = scoring.get("contributions", {})
     ews = 0.0
-    numerator = 0.0
+    gated = {}
     for name, contrib in contributions.items():
         if contrib.get("used"):
             ews += contrib["effective_weight"]
-            numerator += contrib["score"] * contrib["effective_weight"]
-            c.check(group, f"{label}: {name} weight == base*factor",
-                    abs(contrib["effective_weight"] - round(document.PDF_SCAN_WEIGHTS[name] * document.CONFIDENCE_FACTOR.get(contrib["confidence"], 0.0), 4)) < 1e-9)
+            factor = document.CONFIDENCE_FACTOR.get(contrib["confidence"], shared_scoring.UNKNOWN_CONFIDENCE_FACTOR)
+            c.check(group, f"{label}: {name} weight == image-path base * factor",
+                    abs(contrib["effective_weight"] - round(shared_scoring.WEIGHTS[name] * factor, 4)) < 1e-9)
+            gated[name] = {"score": contrib["score"], "confidence": contrib["confidence"], "applicable": True}
         else:
             c.equal(group, f"{label}: {name} unused => weight 0", contrib.get("effective_weight"), 0.0)
+            gated[name] = {"score": None, "applicable": False}
     c.close(group, f"{label}: effective_weight_sum == sum of used weights", scoring["effective_weight_sum"], ews, tol=2e-4)
     c.equal(group, f"{label}: confidence tier matches rounded weight sum", scoring["confidence"], tier_for(scoring["effective_weight_sum"]))
     c.equal(group, f"{label}: usable == weight sum >= 0.15", scoring["usable"], scoring["effective_weight_sum"] >= 0.15)
     if ews > 1e-9:
-        normalized = numerator / ews
-        reliability = min(1.0, ews / 0.55)
-        c.close(group, f"{label}: score == normalized * reliability", scoring["score"], min(1.0, normalized * reliability), tol=2e-4)
-        c.close(group, f"{label}: raw_normalized_score", scoring["raw_normalized_score"], normalized, tol=2e-4)
+        # Independent recomputation through the shared image-path combiner,
+        # under the context buckets the element was scored with.
+        buckets = scoring.get("combiner", {}).get("context_buckets")
+        expected, diag = shared_scoring.visual_score(gated, buckets)
+        pixel_score = scoring.get("visual_score", scoring["score"])
+        c.close(group, f"{label}: pixel score == image-path visual_score of the used signals", pixel_score, expected, tol=2e-4)
+        if "visual_score" in scoring:
+            # The embedded image's own file metadata, folded in like an upload.
+            c.close(group, f"{label}: score == scoring.combine(pixel score, file metadata)",
+                    scoring["score"], shared_scoring.combine(pixel_score, scoring["metadata"]), tol=2e-4)
+        c.close(group, f"{label}: raw_normalized_score == uncapped image-path score",
+                scoring["raw_normalized_score"], diag["uncapped_score"], tol=2e-4)
         c.close(group, f"{label}: evidence_coverage == weight sum / 1.0", scoring["evidence_coverage"], ews, tol=2e-4)
 
 
@@ -514,8 +541,9 @@ def validate_pdf_result(c: Checks, group: str, result: dict):
                         all(page["signals"][s]["score"] is None for s in SIGNAL_NAMES))
         else:
             if risk.get("source") != "embedded_image":
-                c.equal(group, f"{label}: page render == score_pdf_page(signals, profile)",
-                        render, document.score_pdf_page(page["signals"], profile))
+                c.equal(group, f"{label}: page render == score_pdf_page(signals, profile, buckets)",
+                        render, document.score_pdf_page(page["signals"], profile,
+                                                        render.get("combiner", {}).get("context_buckets")))
             else:
                 c.info(group, f"{label}: applicable page driven by embedded image; render signals not recoverable from response")
         validate_scoring_internals(c, group, f"{label} render", render)
@@ -530,8 +558,10 @@ def validate_pdf_result(c: Checks, group: str, result: dict):
             img_profile = scoring["image_profile"]
             c.check(group, f"{il}: raster stats present (unique_colors, edge_density)",
                     isinstance(img_profile.get("unique_colors"), int) and isinstance(img_profile.get("edge_density"), float))
-            c.equal(group, f"{il}: scoring == score_embedded_image(signals, profile)",
-                    scoring, document.score_embedded_image(img["signals"], img_profile))
+            c.equal(group, f"{il}: scoring == score_embedded_image(signals, profile, buckets, metadata)",
+                    scoring, document.score_embedded_image(img["signals"], img_profile,
+                                                           scoring.get("combiner", {}).get("context_buckets"),
+                                                           metadata_result=scoring.get("metadata")))
             if document._is_flat_fill(img_profile):
                 c.check(group, f"{il}: flat-fill raster is unusable", not scoring["usable"] and "flat or gradient fill" in scoring["note"])
             too_small = (
@@ -589,7 +619,11 @@ def validate_pdf_result(c: Checks, group: str, result: dict):
         c.equal(group, "no reliable page => aggregate insufficient", (aggregate["score"], aggregate["confidence"], aggregate["worst_page"]),
                 (0.0, "insufficient", None))
         c.equal(group, "no reliable page => no flagged pages", aggregate["flagged_pages"], [])
-        c.equal(group, "no reliable page => score_applicable False", result["score_applicable"], False)
+        # main.py still reports a score (0.98) when the Info dict names a
+        # generator, even with no reliable raster evidence.
+        meta_hit = explicit_meta.get("confidence") == "high" or legacy_meta.get("confidence") == "high"
+        c.equal(group, "no reliable page => score_applicable only via a metadata hit",
+                result["score_applicable"], meta_hit)
 
     # --- flagged embedded images (main.py mirror of the 0.40 rule) ----------
     expected_emb = []
@@ -606,8 +640,11 @@ def validate_pdf_result(c: Checks, group: str, result: dict):
     explicit_hit = explicit_meta["confidence"] == "high"
     legacy_hit = legacy_meta.get("confidence") == "high"
     if explicit_hit:
-        c.equal(group, "explicit generator hit => ai_generated 0.98 / confidence high",
-                (result["ai_generated"], result["confidence"]), (0.98, "high"))
+        # Image-path rule: the signature raises the score to >= 0.98 and never
+        # lowers stronger visual evidence.
+        c.equal(group, "explicit generator hit => ai_generated max(aggregate, 0.98) / confidence high",
+                (result["ai_generated"], result["confidence"]),
+                (round(max(float(aggregate["score"]), 0.98), 4), "high"))
     elif legacy_hit:
         c.close(group, "legacy metadata hit => max(aggregate, legacy)", result["ai_generated"],
                 max(float(aggregate["score"]), float(legacy_meta["score"])))
@@ -673,10 +710,27 @@ def step_images(c: Checks, assets: dict[str, bytes], report: dict) -> None:
         im = Image.open(io.BytesIO(assets[key]))
         profile = {"image_index": 1, "width_px": im.width, "height_px": im.height,
                    "pixel_count": im.width * im.height, "page_coverage": 1.0}
-        emb = document.score_embedded_image(res["signals"], profile)
+        emb = document.score_embedded_image(res["signals"], profile, res["scoring"]["context"]["buckets"])
         report["images"][key]["as_embedded"] = emb
         validate_scoring_internals(c, group, f"{key} as embedded raster", emb)
-        c.check(group, f"{key}: full-size baseline raster is usable embedded evidence", emb["usable"] and emb["confidence"] in RELIABLE)
+        # Real-data parity: a picture inside a PDF gets the same visual score
+        # as the same picture uploaded directly (metadata aside, which PDF
+        # extraction does not preserve).
+        if emb["usable"]:
+            c.close(group, f"{key}: embedded score == direct-upload visual score",
+                    emb["score"], res["scoring"]["visual_score"], tol=1e-4)
+        if key == "human":
+            # A real photo must never be flagged.
+            c.check(group, f"{key}: real photo is never flagged as embedded evidence",
+                    not (emb["usable"] and emb["confidence"] in RELIABLE and emb["score"] >= FLAG_THRESHOLD),
+                    f"usable={emb['usable']} confidence={emb['confidence']} score={emb['score']}")
+            c.check(group, f"{key}: real photo is usable evidence that reads as real (image-path weights)",
+                    emb["usable"] and emb["confidence"] in RELIABLE and emb["score"] < 0.35,
+                    f"usable={emb['usable']} confidence={emb['confidence']} score={emb['score']}")
+        else:
+            c.check(group, f"{key}: full-size baseline raster is usable embedded evidence", emb["usable"] and emb["confidence"] in RELIABLE)
+            c.check(group, f"{key}: AI baseline raster is flagged as embedded evidence (>= {FLAG_THRESHOLD})",
+                    emb["score"] >= FLAG_THRESHOLD, f"score={emb['score']}")
         sig_summary = ", ".join(f"{s}={res['signals'][s]['score']:.3f}/{res['signals'][s]['confidence']}" for s in SIGNAL_NAMES)
         c.info(group, f"{key}: ai_generated={score:.4f} embedded={emb['score']:.4f} ({emb['confidence']})", sig_summary)
 
@@ -768,7 +822,7 @@ def step_synthesized_pdfs(c: Checks, assets: dict[str, bytes], report: dict, sav
                 c.check(group, "clean pages do not dilute: document score > mean of pages",
                         float(agg["score"]) > float(agg["mean_page_score"]), f"score={agg['score']} mean={agg['mean_page_score']}")
         if "worst_source" in exp:
-            c.equal(group, f"worst evidence source is {exp['worst_source']}", agg["worst_evidence_source"], exp["worst_source"])
+            c.equal(group, f"worst evidence source is {exp['worst_source']}", agg.get("worst_evidence_source"), exp["worst_source"])
         if "flagged_exactly" in exp:
             c.equal(group, f"flagged pages exactly {exp['flagged_exactly']} (>= {FLAG_THRESHOLD})",
                     [f["page"] for f in agg["flagged_pages"]], exp["flagged_exactly"],
@@ -789,7 +843,16 @@ def step_synthesized_pdfs(c: Checks, assets: dict[str, bytes], report: dict, sav
                     f"p{a} coverage={ea['page_coverage']} p{b} coverage={eb['page_coverage']}")
             c.equal(group, "identical raster scores identically at 100% and ~1% page coverage",
                     (ea["ai_generated"], ea["confidence"]), (eb["ai_generated"], eb["confidence"]))
-            c.equal(group, "both pages therefore carry the same risk", per_page[a]["ai_generated"], per_page[b]["ai_generated"])
+            # Coverage must not dilute: each page carries at least the shared
+            # raster's score. (The full-page copy may carry slightly more: its
+            # faithful page render is a second evidence unit, and the worst
+            # reliable unit wins.)
+            for n in (a, b):
+                c.check(group, f"p{n}: page risk is not diluted below the raster's own score",
+                        per_page[n]["ai_generated"] >= per_page[n]["embedded_images"][0]["ai_generated"] - 1e-9,
+                        f"page={per_page[n]['ai_generated']} raster={per_page[n]['embedded_images'][0]['ai_generated']}")
+            c.equal(group, "the small placement's risk is exactly the raster's score",
+                    per_page[b]["ai_generated"], eb["ai_generated"])
         if exp.get("insufficient"):
             c.equal(group, "document is insufficient_visual_evidence",
                     (res["classification"], res["score_applicable"], agg["worst_page"]),

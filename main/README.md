@@ -183,14 +183,110 @@ beyond that is silently skipped, not rejected.
 ## How it works
 
 Four independent visual signals, weighted and combined (`app/main.py`,
-`WEIGHTS` dict):
+`WEIGHTS` dict). Thresholds are in physical units (grey levels, grey
+levels per pixel, log10 power) and each analyzer's docstring explains
+the measured ranges they were set from.
 
-| Signal | Weight | What it measures |
+| Signal | Base weight | What it measures |
 |---|---|---|
-| `frequency` | 0.35 | FFT of the image, DC-centered. Looks at the radial power spectrum: real photos fall off smoothly (~power law) from center to edge; AI decoders often suppress high-frequency energy (no genuine sensor noise) or leave periodic bumps from upsampling. |
-| `noise` | 0.30 | Denoise-and-subtract to estimate the sensor noise floor in flat regions. Real cameras always leave some; AI images are often suspiciously clean, or have noise that's too spatially structured to be real. |
-| `gradients` | 0.25 | Sobel gradient variance inside a rough skin mask and flat-background mask. Real skin has fine texture (pores, grain); AI skin is frequently over-smoothed. |
-| `lighting` | 0.10 | Weighted circular variance of local shading-gradient directions across a grid, as a cheap proxy for lighting consistency. **The weakest and noisiest signal** — real multi-light or overcast scenes trigger it too. Weighted low on purpose. |
+| `noise` | 0.40 | Noise floor in flat 16x16 blocks (Immerkaer estimator). Generated images that carry grain carry a *synthetic* one: the same amplitude everywhere (stationary) and spatially white. Real floors are patchy and correlated by the camera pipeline. Not applicable when the floor was erased or an aligned JPEG 8x8 grid shows quantisation reshaped it, since compression hides synthetic grain and distorts real noise alike. |
+| `frequency` | 0.25 | Hann-windowed, Welch-averaged radial power spectrum against a power-law fit. Scores a *knee*: the spectrum follows the natural power law, then collapses in the top band, which is what enlarging an image from a lower resolution leaves (generator "hires fix"/upscaler passes). Gradual optical roll-off is discounted. |
+| `gradients` | 0.25 | **Portraits only.** Gradient variance (grey levels/pixel) of facial skin on a canonical 128px face crop, plus the backdrop's flat regions. Airbrushed generated skin measures ~7-10, real faces >= 23; rendered backdrops ~1, real ones >= 3. A face must be found by two independent Haar cascades; colour alone is not trusted (it matched fire, wood floors and beige walls as "skin"). |
+| `lighting` | 0.10 | Weighted circular variance of local shading-gradient directions across a grid, as a cheap proxy for lighting consistency. **The weakest and noisiest signal.** Real multi-light or overcast scenes trigger it too. Its "low" confidence halves its effective weight; it's a tie-breaker. |
+
+How the four are combined:
+
+- Each signal reports `applicable`. A signal that doesn't apply carries
+  **no weight**; it doesn't contribute a placeholder 0.5, which isn't
+  neutral against the UI's 0.35 "likely real" cut-off.
+- **Non-portrait photos:** when `gradients` doesn't apply, its weight is
+  redistributed to `noise` and `frequency` (keeping their 0.40 : 0.25
+  proportion), so those two carry the score. Before context factors
+  (below), with a 0.10 lighting weight at "low" confidence, that's
+  roughly noise 0.58 / frequency 0.36 / lighting 0.05 of the effective
+  weight.
+- Each weight is scaled by the signal's confidence (`medium` 1.0,
+  `low-medium` 0.7, `low` 0.5).
+- **Corroboration:** if only one of noise/frequency/gradients applies,
+  the score is capped at 0.60 ("inconclusive"). One cue alone, such as
+  a frequency knee that an upscaled real photo also shows, can't produce
+  "likely AI".
+- The response's `scoring` block (with `details=true`) shows which
+  signals applied, where the gradients weight went and the effective
+  weights used.
+- Noise and frequency run on a native-resolution centre crop (up to
+  2048px). Downscaling would average away the grain and hide the knee.
+  Gradients and lighting run on a copy capped at 1536px.
+
+### Context-dependent weighting
+
+How far each signal can be trusted depends on what happened to the
+image. JPEG quantisation attenuates the top of the spectrum and smooths
+skin; upscaling smooths real skin too and correlates the noise floor. So
+each signal's weight is also multiplied by a factor for the context the
+image was measured in (`app/context.py`, `app/weighting.py`). The
+context is read from the file, never from its name:
+
+| Dimension | Buckets | Read from |
+|---|---|---|
+| `compression` | `lossless`, `jpeg_history` (PNG carrying a JPEG 8x8 grid), `jpeg_high` (q >= 90), `jpeg_mid` (75-89), `jpeg_low` (< 75) | magic bytes; JPEG quality estimated from the quantisation tables stored in the file; JPEG grid in the pixels |
+| `scale` | `native`, `upscaled` | the frequency analyzer's high-band knee |
+| `size` | `small` (< 0.35 MP), `medium`, `large` (>= 1 MP) | decoded dimensions |
+| `color` | `color`, `grayscale` | decoded channels |
+
+A factor below 1 is applied as an *absolute* discount: a signal
+weighted at 0.5x in this context contributes half its usual pull, even
+when it's the only signal left. It isn't renormalised back to full
+strength. The share of evidence discounted this way is reported as
+`scoring.context_discount`, and `scoring.context` /
+`scoring.context_multipliers` show what was detected and applied
+(`details=true`).
+
+The factors are not hand-set. `eval/calibrate_weights.py` builds a
+synthetic degradation batch from labeled sources: every source rescaled
+0.5x-2x and saved as PNG / JPEG 95-60, plus crops, grayscale,
+resize-after-JPEG and double JPEG. It then measures, per context
+bucket, how often each signal's tell *survives* the degradation on
+generated sources and how often it *false-alarms* on genuine ones. It
+validates leave-one-source-out and only writes dynamic factors
+(`app/weighting_calibration.json`) if they don't do worse than static
+weights on held-out sources. The full numbers are in
+[`eval/REPORT.md`](eval/REPORT.md). Current state, from 3 generated and
+16 genuine sources (684 variants):
+
+- **Adopted: compression + scale factors.** For example, frequency gets
+  1.12x on lossless, 0.99x on JPEG q75-94 and 0.83x below q75; noise
+  0.86x under JPEG; gradients 0.88x on upscaled images, where upscaling
+  smooths genuine skin.
+- **It is not a measured improvement.** On held-out sources, balanced
+  accuracy is 69.0% vs 68.5% for static weights (95% CI of the
+  difference -0.3 to +1.3 points), with the same 9.2% false-positive
+  rate. It was adopted because it's non-inferior and the factors follow
+  the physics, not because it wins.
+- **Size and colour are not fitted.** In the available sources they're
+  confounded with the label: the genuine library photos are small and
+  partly grayscale, the generated ones ~1 MP colour, so megapixels alone
+  "detect" AI at AUC 0.78. Factors fitted on them would learn that.
+  Adding large colour genuine photos (`--real-dir`) fixes this
+  automatically.
+- **Which signal indicates AI is deliberately not learned.** Each of the
+  three generated sources is caught by a different signal. Any model
+  that learned it (tried: likelihood-ratio weighting, a logistic
+  regression) inverted on the held-out generator; the regression fell
+  from AUC 0.81 in-sample to 0.05 held-out. Only degradation behaviour,
+  which transfers between generators, is fitted.
+- Along JPEG quality the fit is constrained so a signal never becomes
+  *more* trustworthy as quality drops. Without that, sampling noise
+  produced inverted factors (0.74x at q >= 90 but 1.31x at q75-89).
+
+To recalibrate after changing an analyzer, or with your own labeled
+images (the most valuable improvement: more generated sources):
+
+```bash
+python eval/calibrate_weights.py --ai-dir path/to/generated --real-dir path/to/genuine
+```
+
+Deleting `app/weighting_calibration.json` restores static weights.
 
 `metadata` (in `app/analyzers/metadata.py`) is handled separately: if
 it finds an explicit generator fingerprint (Stable Diffusion WebUI's
@@ -205,8 +301,18 @@ moderately. No metadata either way is treated as neutral.
 
 For a PDF, `app/pdf_utils.py` rasterizes each page to a PNG (via
 `pypdfium2`, which bundles its own PDFium binary — no system
-`poppler` install needed) and every page goes through the same
-pipeline as a standalone image.
+`poppler` install needed) and extracts every embedded raster image.
+Page renders (when the page is mostly raster) and embedded images go
+through the same signals *and the same weighting* as a standalone image.
+An embedded image gets the score it would get as an upload, and the PDF
+layer only decides what counts as reliable evidence (see Limitations).
+Each element reports a confidence tier from how much of the evidence
+stack was measured: the sum of base weight × confidence factor over the
+usable signals. It's `medium-high` at >= 0.65 (e.g. noise + frequency),
+`medium` at >= 0.40 (e.g. noise alone), `low-medium` at >= 0.20 (e.g. a
+faceless JPEG photo: frequency + lighting) and `low` below that.
+Elements below 0.15 are unusable, and only `low-medium` or better can
+drive the document score.
 
 Each analyzer lives in its own file under `app/analyzers/` with a
 docstring explaining the reasoning — read those before tuning
@@ -219,28 +325,76 @@ anything.
   physically motivated but hand-tuned, not fit to data. Expect a
   meaningfully higher false-positive/false-negative rate, especially
   on borderline cases.
-- **JPEG re-compression, resizing, and screenshots degrade all four
-  signals**, especially `noise` and `frequency` — recompression adds
-  its own artifacts that can look either "too clean" or "too noisy"
-  depending on quality settings. If your images pass through a CDN or
-  get re-saved before you see them, expect noisier scores.
-- **PDF pages inherit the same limitations, plus rasterization
-  itself is a re-compression step** — a real photo embedded in a PDF
-  and re-rendered at 200 DPI will read somewhat "cleaner" than the
-  original file would, nudging scores upward. Treat PDF-derived scores
-  as slightly less reliable than a direct image upload of the same
-  content.
+- **JPEG re-compression, resizing, and screenshots remove evidence.**
+  They don't manufacture it: compression makes `noise` step aside
+  rather than read "too clean" as AI. But once the evidence is gone,
+  nothing can recover it. Measured on the baseline set: a generated
+  portrait re-saved as JPEG still scores ~0.55 (skin/backdrop texture
+  survives), and the fireplace scene ~0.60 (the frequency knee
+  survives), but `ai-retouched.png` re-saved as JPEG drops to ~0.07 and
+  the fireplace downscaled by half to ~0.02. Across the whole synthetic
+  degradation batch (`eval/REPORT.md`) the generated portrait is flagged
+  in 92% of its variants, but the fireplace and the retouched photo in
+  only 22-25%; genuine photos are flagged in 9% of theirs, mostly
+  upscaled ones.
+- **Known false positives.** Film scans and some high-ISO photos carry
+  stationary, white grain that `noise` can't tell from synthetic grain
+  (skimage's `astronaut.png`, a scanned NASA portrait, scores ~0.50).
+  Real photos that were *upscaled* trip `frequency` (a 1.41x bicubic
+  upscale of `human.jpeg` scores ~0.44).
+- **PDF pages inherit the same limitations.** The PDF layer avoids
+  adding its own resampling:
+  - Embedded images are extracted as their own decoded pixels (not drawn
+    through their placement transform). A JPEG stored as DCTDecode is
+    analyzed exactly as that JPEG file would be, including its EXIF.
+  - Photo pages are rendered at the dominant image's native pixel density
+    with image smoothing off. The render is only used as pixel evidence
+    if it preserves the image's fine detail (within 3% along both axes).
+  - Stretched, rotated or clamped placements, where no render can be 1:1,
+    don't feed frequency/noise/gradients from the render. Those signals
+    would measure the renderer: an earlier fixed 200 DPI smoothed render
+    made a genuine photo page read as "upscaled" and flagged it.
+  - The embedded image's own pixels are still scored in those cases.
+- **PDF rasters are scored like uploads, with PDF-specific gates on
+  top.** Page renders and embedded images go through the same combiner as
+  a direct upload (`app/scoring.py`): same weights, confidence factors,
+  no-portrait redistribution, single-signal cap and context factors. The
+  JPEG quality of an embedded DCTDecode stream is read from its own
+  quantisation tables. The same JPEG therefore scores identically either
+  way (tested end to end in `tests/test_pdf_image_parity.py`). The PDF
+  path only adds: which signals may run on a rendered page (content type,
+  image-area fraction), that flat/gradient fills and icon-sized rasters
+  are not evidence, that an element with no substantive signal is
+  "insufficient" (score 0) rather than 0.5 "inconclusive", and the
+  confidence tiers that decide what may drive the document verdict.
+  Metadata follows the upload rule too:
+  - The embedded JPEG's own EXIF and the document's Info dictionary are
+    folded in with `scoring.combine`: a generator signature raises the
+    score to at least its own value and never lowers stronger visual
+    evidence.
+  - Every provenance check (PNG chunks, EXIF Software, PDF Info dict)
+    uses one term list and one whole-token matcher
+    (`document.AI_GENERATOR_TERMS`). Ordinary words like "flux"
+    (French: cash flow), "dalle", "firefly", "reflux" or "InfluxData"
+    are not read as generator names.
 - **No per-generator identification.** You get "does this look
   synthetic," not "was this MidJourney vs Flux."
 - **`lighting` is a genuinely weak signal** on its own; it's there as
   a minor corroborating factor, not evidence.
-- **Thresholds in each analyzer (e.g. the `1.2` noise-std cutoff, the
-  `60.0` skin-gradient-variance cutoff) were set from first-principles
-  reasoning about what "normal" looks like, not calibrated against a
-  labeled dataset.** If you have real/AI-labeled images to test
-  against, that's the highest-value next step — run a batch through
-  and adjust the constants in each analyzer until the ROC curve looks
-  right for your use case.
+- **Thresholds were set from a small set of measurements, not fit to a
+  labeled dataset.** They came from the three generated baseline images,
+  `human.jpeg`, fifteen genuine photos bundled with
+  scikit-image/scikit-learn/matplotlib (most non-portrait, several
+  lossless PNG so format can't stand in for authenticity), and
+  re-encoded/resized/upscaled variants of each. On that set every
+  generated baseline image scores 0.59-0.73 and every genuine photo
+  0.00-0.18, except `astronaut.png` above. Moving any individual
+  threshold by +/-20% changes none of those outcomes. That is far too
+  few generated images to claim a general accuracy: three images from
+  unknown generators can't represent the space. If you have real/AI
+  labeled images, the highest-value next step is to run a batch through
+  and adjust the constants at the top of each analyzer until the ROC
+  curve looks right for your use case.
 - **Adversarial robustness is not a goal here.** Anyone who knows
   these are the checks can add noise, blur, or re-compress to defeat
   them specifically.
