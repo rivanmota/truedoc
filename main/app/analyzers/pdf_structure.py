@@ -12,8 +12,10 @@ from statistics import median
 import pypdfium2 as pdfium
 
 from app import pdf_utils
+from app.pdfium_guard import exclusive as _pdfium_exclusive
 
 
+@_pdfium_exclusive
 def _rotations(pdf_bytes: bytes, max_pages: int) -> list[int]:
     doc = pdfium.PdfDocument(pdf_bytes)
     try:

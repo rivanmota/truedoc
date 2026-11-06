@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime
 from typing import Optional
 
 import cv2
@@ -207,8 +208,12 @@ def _pdf_metadata_verdict(aggregate: dict, explicit_meta: dict, legacy_meta: dic
     return visual, aggregate.get("confidence", "insufficient"), aggregate.get("worst_page") is not None
 
 
-def _run_pdf_analysis(pdf_bytes: bytes) -> dict:
+def _run_pdf_analysis(pdf_bytes: bytes, now: Optional[datetime] = None) -> dict:
     """Document-aware, fraud-sensitive PDF analysis.
+
+    ``now`` is the reference time for the one time-relative check (metadata
+    dates in the future); the current time when omitted. Everything else is
+    a function of the bytes alone.
 
     Whole-page camera/photo forensics are used only for image-dominant pages.
     Every embedded raster image is also analyzed independently, regardless of
@@ -325,7 +330,7 @@ def _run_pdf_analysis(pdf_bytes: bytes) -> dict:
     # PDF-level fraud/tamper diagnostics are intentionally kept separate from
     # ai_generated. A document can be structurally suspicious without being
     # AI-generated.
-    metadata_consistency = pdf_metadata_consistency.analyze(pdf_bytes)
+    metadata_consistency = pdf_metadata_consistency.analyze(pdf_bytes, now=now)
     revisions_result = pdf_revisions.analyze(pdf_bytes)
     signatures_result = pdf_signatures.analyze(pdf_bytes)
     structure_result = pdf_structure.analyze(pdf_bytes)
@@ -593,3 +598,10 @@ async def _handle_check(models: str, media: Optional[UploadFile], url: Optional[
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# JSON scan API (POST /api/v1/scans): the UI's scan as a self-describing
+# response. Imported last because it builds on the analysis functions above.
+from app.scan_api import router as scan_router  # noqa: E402
+
+app.include_router(scan_router)

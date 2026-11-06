@@ -91,7 +91,25 @@ truedoc/
    `type.document_anomalies` for the PDF files, against the
    expectations listed under `baseline/` above.
 
-3. **Or use the web UI** (`http://localhost:3000` after `./run.sh`) to
+3. **Or get the scan as JSON** from the scan API. The response has a
+   `summary` section (HTTP status, thresholds, final score,
+   classification, confidence) and a `details` section (file metadata,
+   every signal's measurements and explanation). Send `details=false`
+   for the summary alone. See "Scan API" in
+   [`main/README.md`](main/README.md) for the response fields:
+
+   ```bash
+   curl -s -X POST 'http://localhost:8008/api/v1/scans' \
+     -F 'file=@baseline/png/ai-generated.png' | python3 -m json.tool
+
+   curl -s -X POST 'http://localhost:8008/api/v1/scans' \
+     -F 'file=@baseline/png/ai-generated.png' -F 'details=false' | python3 -m json.tool
+
+   curl -s -X POST 'http://localhost:8008/api/v1/scans' \
+     -F 'url=https://example.com/photo.jpg' | python3 -m json.tool
+   ```
+
+4. **Or use the web UI** (`http://localhost:3000` after `./run.sh`) to
    drag-and-drop any file from `baseline/` and see the score plus
    per-signal breakdown visually.
 

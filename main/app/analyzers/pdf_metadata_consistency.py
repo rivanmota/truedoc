@@ -13,6 +13,8 @@ from typing import Any
 
 import pypdfium2 as pdfium
 
+from app.pdfium_guard import exclusive as _pdfium_exclusive
+
 
 _PDF_DATE_RE = re.compile(
     r"^(?:D:)?(?P<y>\d{4})(?P<m>\d{2})?(?P<d>\d{2})?"
@@ -78,6 +80,7 @@ def _dt_iso(dt: datetime | None) -> str | None:
     return dt.isoformat().replace("+00:00", "Z") if dt else None
 
 
+@_pdfium_exclusive
 def _pdfium_metadata(pdf_bytes: bytes) -> dict[str, str]:
     doc = pdfium.PdfDocument(pdf_bytes)
     try:

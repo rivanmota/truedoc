@@ -10,6 +10,8 @@ import re
 
 import pypdfium2 as pdfium
 
+from app.pdfium_guard import PDFIUM
+
 
 _PATTERNS = {
     "javascript": re.compile(rb"/JavaScript\b|/JS\b"),
@@ -40,11 +42,12 @@ def analyze(pdf_bytes: bytes) -> dict:
     page_count = None
 
     try:
-        doc = pdfium.PdfDocument(pdf_bytes)
-        try:
-            page_count = len(doc)
-        finally:
-            doc.close()
+        with PDFIUM:
+            doc = pdfium.PdfDocument(pdf_bytes)
+            try:
+                page_count = len(doc)
+            finally:
+                doc.close()
     except Exception:
         pass
 

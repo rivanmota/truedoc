@@ -14,6 +14,7 @@ from PIL import Image
 import pypdfium2 as pdfium
 
 from app.context import estimate_jpeg_quality
+from app.pdfium_guard import exclusive as _pdfium_exclusive
 
 MAX_PAGES = 20
 MAX_EMBEDDED_IMAGES_PER_PAGE = 64
@@ -372,6 +373,7 @@ def render_fidelity(render_rgb: Image.Image, raster_png: bytes, bounds, page_hei
     }
 
 
+@_pdfium_exclusive
 def render_pdf_pages_with_profiles(pdf_bytes: bytes, dpi: int = 200) -> list[dict]:
     """Return page PNGs, structural profiles and embedded raster images.
 
@@ -437,6 +439,7 @@ def render_pdf_pages(pdf_bytes: bytes, dpi: int = 200) -> list[bytes]:
     return [p["png_bytes"] for p in render_pdf_pages_with_profiles(pdf_bytes, dpi=dpi)]
 
 
+@_pdfium_exclusive
 def inspect_pdf_pages(pdf_bytes: bytes) -> list[dict]:
     """Return structural profiles without exposing rendered bytes."""
     doc = pdfium.PdfDocument(pdf_bytes)
@@ -460,6 +463,7 @@ def inspect_pdf_pages(pdf_bytes: bytes) -> list[dict]:
         doc.close()
 
 
+@_pdfium_exclusive
 def read_pdf_metadata(pdf_bytes: bytes) -> dict[str, str]:
     """Document-level Info dict fields (Title/Author/Creator/etc.), if any."""
     doc = pdfium.PdfDocument(pdf_bytes)

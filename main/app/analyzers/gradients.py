@@ -39,6 +39,7 @@ measured in the hundreds to thousands.
 from __future__ import annotations
 
 import os
+import threading
 
 import cv2
 import numpy as np
@@ -65,21 +66,28 @@ MIN_BG_FRACTION = 0.10
 SKIN_WEIGHT = 0.6
 BG_WEIGHT = 0.4
 
-_CASCADES: tuple | None = None
+# One pair of classifiers per thread. cv2.CascadeClassifier keeps per-call
+# state on the object, so concurrent detectMultiScale calls on a shared
+# instance interfere: measured, they shift face boxes by a few pixels (and so
+# the skin statistics) or fail inside OpenCV. The scan API analyses requests
+# in a thread pool, so sharing one pair made results depend on what else was
+# running. Loading is cheap and happens once per worker thread.
+_CASCADES = threading.local()
 
 
 def _load_cascades():
-    """Both frontal-face cascades shipped with opencv-python, or None."""
-    global _CASCADES
-    if _CASCADES is None:
+    """This thread's two frontal-face cascades shipped with opencv-python, or None."""
+    cascades = getattr(_CASCADES, "pair", None)
+    if cascades is None:
         try:
             base = cv2.data.haarcascades  # type: ignore[attr-defined]
             a = cv2.CascadeClassifier(os.path.join(base, "haarcascade_frontalface_default.xml"))
             b = cv2.CascadeClassifier(os.path.join(base, "haarcascade_frontalface_alt2.xml"))
-            _CASCADES = (a, b) if not (a.empty() or b.empty()) else ()
+            cascades = (a, b) if not (a.empty() or b.empty()) else ()
         except Exception:
-            _CASCADES = ()
-    return _CASCADES or None
+            cascades = ()
+        _CASCADES.pair = cascades
+    return cascades or None
 
 
 def _iou(p, q) -> float:

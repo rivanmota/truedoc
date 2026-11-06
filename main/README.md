@@ -93,7 +93,371 @@ npm run dev
 By default it points at `http://localhost:8008` for the API — set
 `BACKEND_URL` to override (see `web/app/api/check/route.ts`).
 
-## Use the API directly
+## Scan API (`POST /api/v1/scans`)
+
+The same scan the web UI runs, returned as JSON. It is served by the same
+API process (port 8008) and scores every file exactly as `/1.0/check.json`
+and the UI do. It only reshapes the engine's output (`app/scan_api.py`).
+
+Every response has the same two sections:
+
+| Section | What's in it | |
+|---|---|---|
+| **`summary`** | HTTP status, thresholds, final score, classification, confidence, one-line explanation, scan ID, timestamp, engine version | always present, including on errors |
+| **`details`** | file metadata, engine info, every forensic signal with its measurements and explanation, how the signals were combined, and per-page results for PDFs | omitted when the request sends `details=false` |
+
+Clients that only need the verdict can read `summary` (or request just
+that with `details=false`) and ignore the rest.
+
+### Request
+
+Multipart form (or url-encoded form for `url`). Send **exactly one** of
+`file` and `url`:
+
+| Field | | |
+|---|---|---|
+| `file` | multipart file | PNG, JPEG or PDF (format is sniffed from the bytes) |
+| `url` | text | public `http://` or `https://` URL of a PNG, JPEG or PDF |
+| `details` | `true` / `false` (optional, default `true`) | `false` returns only `summary` |
+
+#### Validation
+
+Every request is checked before any analysis runs, and a failed check
+returns one specific error (see [Errors](#errors)). The rules live in
+`app/scan_validation.py`.
+
+- **Body:** must be `multipart/form-data`, or
+  `application/x-www-form-urlencoded` for `url` only. JSON or raw bytes
+  are refused with 415.
+- **Fields:**
+  - Only `file`, `url` and `details` are accepted, each at most once.
+  - An unknown field is an error, not silently ignored. A typo such as
+    `detail=false` would otherwise quietly return the full response; the
+    error suggests the right name (`media` → `file`).
+  - `file` must be a file part and `url`/`details` text parts.
+  - Text parts are limited to 16 KB, and a form to 10 parts.
+- **Size:**
+  - The body is capped at the file limit (`TRUEDOC_MAX_FILE_MB`,
+    default 50) plus 64 KB for the form fields.
+  - A url-encoded body, which can't carry a file, is capped at 64 KB.
+  - An oversized body is refused from its `Content-Length` before
+    anything is read. Without a `Content-Length` (chunked upload),
+    reading stops as soon as the limit is passed, so a huge upload is
+    never written to disk.
+- **URL:**
+  - Absolute `http(s)://`, at most 2048 characters.
+  - No whitespace or control characters, no `user:password@`, and a
+    valid port.
+  - The host must resolve to **public** addresses only. Loopback,
+    private, link-local (incl. cloud metadata `169.254.169.254`),
+    carrier-grade NAT, multicast and reserved ranges are refused, so the
+    server can't be used to reach itself or its network.
+  - Redirects (at most 5) are re-checked hop by hop.
+  - Set `TRUEDOC_ALLOW_PRIVATE_URLS=true` to scan URLs on your own
+    network.
+- **File content** (uploads and downloads alike):
+  - Must be non-empty, and a PNG, JPEG or PDF by its bytes.
+  - Images must have a header that reads cleanly (PNG chunks and
+    checksums are verified), and at most `TRUEDOC_MAX_IMAGE_MEGAPIXELS`
+    pixels (default 100). This is checked from the header, before any
+    pixel is decoded: a few hundred bytes can declare a 400-megapixel
+    image.
+  - PDFs must open without a password and have at least one page.
+
+The scan runs synchronously and the response *is* the result. Nothing is
+stored (there is no database), so save the response if you need it later.
+The `scan_id` identifies that response, for logs and support requests.
+It can't be used to fetch the scan again.
+
+Interactive docs with the full schema: **http://localhost:8008/docs**.
+
+### curl examples
+
+Run these from the repo root (the `baseline/` paths are relative to it).
+
+```bash
+# Full response (summary + details) for an image
+curl -s -X POST http://localhost:8008/api/v1/scans \
+  -F 'file=@baseline/jpg/human.jpeg' | python3 -m json.tool
+
+# Summary only: the critical information, nothing else
+curl -s -X POST http://localhost:8008/api/v1/scans \
+  -F 'file=@baseline/png/ai-generated.png' \
+  -F 'details=false' | python3 -m json.tool
+
+# Upload a PDF and save the full JSON response
+curl -s -X POST http://localhost:8008/api/v1/scans \
+  -F 'file=@baseline/pdf/baseline_sample.pdf' | python3 -m json.tool | tee scan.json
+
+# Scan an image by URL (multipart or url-encoded form both work)
+curl -s -X POST http://localhost:8008/api/v1/scans \
+  -F 'url=https://example.com/photo.jpg' -F 'details=false'
+curl -s -X POST http://localhost:8008/api/v1/scans \
+  --data-urlencode 'url=https://example.com/photo.jpg'
+
+# One row per signal from the details: score, verdict and share of the score (needs jq)
+curl -s -X POST http://localhost:8008/api/v1/scans \
+  -F 'file=@baseline/png/ai-generated.png' \
+  | jq -r '.details.evidence[] | [.signal, .score, .verdict, .weight] | @tsv'
+
+# An error: the body's summary.http_status matches the real status code
+curl -s -w '\nHTTP %{http_code}\n' -X POST http://localhost:8008/api/v1/scans \
+  -F 'file=@README.md'
+```
+
+### Response
+
+With `details=false`, this is the whole response:
+
+```json
+{
+  "summary": {
+    "http_status": 200,
+    "status": "completed",
+    "thresholds": { "likely_real_below": 0.35, "likely_ai_above": 0.65 },
+    "final_score": 0.0379,
+    "classification": "likely_real",
+    "label": "Likely a true doc",
+    "confidence": "low-medium",
+    "explanation": "Likely a true doc (low-medium confidence). Signals used: frequency, lighting. Not applicable or not used: noise, gradients.",
+    "scan_id": "scn_2be1099714cf4101bcb2e9f7e46f74c7",
+    "timestamp": "2026-11-05T05:13:11.638Z",
+    "engine_version": "0.3.4"
+  }
+}
+```
+
+By default `details` follows `summary` (trimmed here to two of the five
+signals):
+
+```json
+{
+  "summary": { "…": "as above" },
+  "details": {
+    "duration_ms": 456,
+    "engine": {
+      "name": "truedoc-forensics", "version": "0.3.4",
+      "weighting": "dynamic: compression+scale",
+      "calibration_generated": "2026-11-04T03:57:11"
+    },
+    "file": {
+      "source": "upload", "filename": "human.jpeg", "url": null,
+      "size_bytes": 114695, "sha256": "ccd605bc…",
+      "format": "jpeg", "mime_type": "image/jpeg",
+      "width": 738, "height": 1280, "page_count": null
+    },
+    "evidence": {
+      "frequency": {
+        "signal": "frequency", "label": "Frequency spectrum",
+        "applicable": true, "used_in_score": true,
+        "score": 0.0, "verdict": "likely_real", "confidence": "medium",
+        "weight": 0.9031, "effect": "weighted",
+        "explanation": "a spectrum that follows the natural power law and then collapses in the top band (a knee) indicates the image was enlarged …",
+        "measurements": {
+          "spectral_slope": -2.379, "mid_band_deviation": 0.01,
+          "high_band_deviation": -0.341, "high_band_knee_drop": 0.351,
+          "spectrum_tiles": "16 x 512px"
+        }
+      },
+      "noise": {
+        "signal": "noise", "label": "Sensor noise floor",
+        "applicable": false, "used_in_score": false,
+        "score": null, "verdict": "not_applicable", "confidence": "low",
+        "weight": 0.0, "effect": "not_used",
+        "explanation": "noise floor unavailable as evidence: an aligned JPEG grid shows quantisation has reshaped the grain …",
+        "measurements": {
+          "floor_state": "reshaped_by_jpeg", "flat_block_count": 1552,
+          "jpeg_grid_detected": true, "noise_sigma_median": 0.133, "…": "…"
+        }
+      },
+      "gradients": { "…": "…" },
+      "lighting":  { "…": "…" },
+      "metadata":  { "…": "…" }
+    },
+    "scoring": {
+      "visual_score": 0.0379, "metadata_effect": "neutral",
+      "applicable_signals": ["frequency", "lighting"],
+      "insufficient_evidence": false, "single_signal_cap_applied": false,
+      "gradients_weight_redistributed_to": ["frequency"],
+      "context_multipliers": { "frequency": 0.9934, "noise": 0.9915, "gradients": 1.0931, "lighting": 0.8299 },
+      "context_discount": 0.0215,
+      "context": { "format": "jpeg", "jpeg_quality_estimate": 75, "…": "…" }
+    }
+  }
+}
+```
+
+For a PDF, `details` also has a `document` section (see below). For an
+image that key is left out.
+
+### `summary` fields
+
+| Field | |
+|---|---|
+| `http_status` | Same as the HTTP status code of the response (200 on success). |
+| `status` | `completed` or `failed`. |
+| `thresholds` | The classification bands, so `final_score` can be read on its own. |
+| `final_score` | The engine's `ai_generated` likelihood, 0-1 (higher = more likely AI-generated/manipulated). `null` for a PDF with no scorable raster content. |
+| `classification` / `label` | The verdict and its wording in the UI (table below). |
+| `confidence` | How much of the evidence stack could be measured (see below). |
+| `explanation` | The verdict in one paragraph: which signals were used and what decided it. |
+| `scan_id`, `timestamp`, `engine_version` | Identify the response: ID, time of the scan (UTC, ISO 8601) and engine version. |
+
+`classification` uses the same bands as `web/lib/verdict.ts`:
+
+| `classification` | When | `label` |
+|---|---|---|
+| `likely_real` | `final_score` < 0.35 | Likely a true doc |
+| `inconclusive` | 0.35 ≤ `final_score` ≤ 0.65 | Inconclusive |
+| `likely_ai_generated` | `final_score` > 0.65 | Likely not a true doc |
+| `insufficient_evidence` | PDF with no scorable raster content | Not scorable |
+
+`confidence` is `high` | `medium-high` | `medium` | `low-medium` | `low`
+| `insufficient`:
+
+- PDFs report the engine's own document confidence.
+- Images get the tier the PDF path gives an embedded image: base weight ×
+  confidence factor summed over the applicable visual signals,
+  `medium-high` ≥ 0.65, `medium` ≥ 0.40, `low-medium` ≥ 0.20. So the same
+  picture gets the same confidence either way it's submitted.
+- Explicit generator metadata makes it `high`.
+
+### `details` fields
+
+- **`duration_ms`**, **`engine`** (name, version, weighting model and
+  calibration date) and **`file`** (source, filename/URL, size, SHA-256,
+  sniffed format and MIME type, pixel size for images, page count for
+  PDFs).
+- **`evidence.<signal>`**, for each of `frequency`, `noise`, `gradients`,
+  `lighting` and `metadata`:
+  - `applicable`: whether the analyzer could take the measurement on this
+    file.
+  - `used_in_score`: whether the signal influenced the final score.
+  - `score`: `null` when the signal doesn't apply, instead of the engine's
+    0.5 placeholder.
+  - `verdict`: `likely_real` | `inconclusive` | `likely_ai` | `neutral` |
+    `not_applicable`, using the same bands as the summary.
+  - `weight`: the signal's share of the visual score.
+  - `effect`: `weighted` or `not_used` for the visual signals. Metadata
+    doesn't average in: its `effect` is `override` (generator signature
+    found), `pull_toward_real` (camera EXIF) or `neutral`, and its
+    `weight` is `null`.
+  - `explanation`: the analyzer's note.
+  - `measurements`: the analyzer's raw diagnostics.
+- **`scoring`** shows how the signals were combined: the visual score
+  before metadata, the metadata effect, the single-signal cap, gradients
+  redistribution, and the context buckets and multipliers.
+- **`document`** (PDF only):
+  - which page and element (`page_render` or `embedded_image`) drove the
+    score;
+  - the PDF engine's own finer-grained `engine_classification`;
+  - flagged pages and embedded images;
+  - `document_anomalies`: structural/tamper findings, kept separate from
+    the AI score;
+  - `pages[]`: per-page score, classification, confidence, signal
+    evidence and embedded-image summaries.
+  For a PDF, `evidence` is the signals of the element that drove the
+  score. `metadata` there is the document's Info dictionary.
+
+### Errors
+
+Errors use the same `summary` section, with `error` in place of the score.
+There is no `details` section:
+
+```json
+{
+  "summary": {
+    "http_status": 415,
+    "status": "failed",
+    "error": {"code": "unsupported_format", "message": "unsupported file format; supported formats: png, jpg/jpeg, pdf"},
+    "scan_id": "scn_…",
+    "timestamp": "…",
+    "engine_version": "0.3.4"
+  }
+}
+```
+
+| HTTP | `error.code` | When |
+|---|---|---|
+| 400 | `missing_input` | no `file` and no `url` (including an empty body) |
+| 400 | `ambiguous_input` | both `file` and `url` |
+| 400 | `unknown_field` | a field other than `file`, `url`, `details` |
+| 400 | `duplicate_field` | a field sent more than once (e.g. two files) |
+| 400 | `invalid_field_type` | `file` sent as text, or `url`/`details` sent as a file |
+| 400 | `invalid_parameter` | `details` is not `true`/`false` (`1`/`0`, `yes`/`no` and `on`/`off` also accepted) |
+| 400 | `malformed_body` | the form can't be parsed: bad multipart, no boundary, over 10 parts, a text part over 16 KB |
+| 400 | `invalid_request` | `Content-Length` header is not a number |
+| 400 | `invalid_url` | not absolute `http(s)://`, over 2048 characters, whitespace/control characters, credentials or an invalid port (also checked on each redirect) |
+| 400 | `url_not_allowed` | the URL's host (or a redirect's) resolves to a non-public address; see `TRUEDOC_ALLOW_PRIVATE_URLS` |
+| 400 | `empty_file` | zero-byte file |
+| 413 | `file_too_large` | body, upload or download over the size limit (`TRUEDOC_MAX_FILE_MB`, default 50; 64 KB for url-encoded bodies) |
+| 415 | `unsupported_media_type` | body is not `multipart/form-data` or `application/x-www-form-urlencoded` |
+| 415 | `unsupported_format` | the file is not a PNG, JPEG or PDF |
+| 422 | `unprocessable_file` | right format, but corrupt, truncated or (PDF) without pages |
+| 422 | `image_too_large` | image over `TRUEDOC_MAX_IMAGE_MEGAPIXELS` (default 100) |
+| 422 | `encrypted_pdf` | PDF is password-protected |
+| 502 | `url_fetch_failed` | host can't be resolved, connection failed, HTTP error status, or more than 5 redirects |
+| 504 | `url_fetch_timeout` | downloading took longer than `TRUEDOC_URL_FETCH_TIMEOUT_S` (default 15) |
+| 500 | `analysis_failed` | unexpected engine error (details are logged under the `scan_id`) |
+
+### Idempotency
+
+The same input always returns the same output. Input means the request
+fields and the file's bytes; output is the whole response except:
+
+| Field | Why it differs |
+|---|---|
+| `summary.scan_id` | a new ID for every scan |
+| `summary.timestamp` | when the scan ran |
+| `details.duration_ms` | how long it took |
+| `summary.engine_version`, `details.engine.version` | a new engine version may score differently; one version never does |
+| the `future_metadata_date` anomaly (PDFs) | judged against the time of the scan (see below) |
+
+Everything else is identical between calls, byte for byte:
+`final_score`, classification, confidence, every signal and measurement,
+PDF pages, anomaly flags and error messages. To compare two responses,
+drop those fields and compare the rest.
+
+Scope and caveats:
+
+- **The filename is part of the input.** It is echoed in
+  `details.file.filename`, so renaming a file changes that one field.
+- **URLs:**
+  - The input is the bytes that were downloaded, identified by
+    `details.file.sha256`. If the remote file changes, so does the
+    result.
+  - Network failures (host down, HTTP errors) depend on the remote side,
+    but the same failure always produces the same error.
+- **Future-dated PDF metadata is a deliberate exception.** A PDF whose
+  metadata is dated more than a day after the scan gets a
+  `future_metadata_date` anomaly.
+  - The check is worth more than strict idempotency: finding the anomaly
+    now but not later is expected.
+  - It is judged against `summary.timestamp` (the clock is read once per
+    scan). So a PDF dated next month is flagged today and not once that
+    date has passed.
+  - The flag, the anomaly score and classification it feeds, and the
+    summary explanation's anomaly count can change as a result. Nothing
+    else depends on when a scan runs.
+- **"Same engine version" means the same deployment:** the same code,
+  the pinned versions in `requirements.txt`, and the same weighting
+  calibration (`details.engine.weighting` / `calibration_generated`).
+- **Concurrent requests don't affect each other's results.**
+  - Each analysis thread has its own face detector (a shared OpenCV
+    cascade returned different face boxes, or crashed, under concurrent
+    use).
+  - PDFium, which is not thread-safe, is used by one thread at a time
+    (`app/pdfium_guard.py`).
+
+`tests/test_scan_idempotency.py` holds the guarantee in place. It covers:
+
+- repeated scans of every baseline file, on success and error paths;
+- concurrent scans, compared with sequential ones;
+- fresh processes with different hash seeds;
+- a pinned clock;
+- that every PDF is opened under the PDFium guard.
+
+## Use the API directly (Sightengine-compatible)
 
 By file upload (image or PDF):
 
