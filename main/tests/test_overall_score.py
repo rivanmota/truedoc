@@ -618,8 +618,8 @@ class TestResponseContract:
         if not ts.exists():
             pytest.skip("web UI not present")
         src = ts.read_text()
-        real = re.search(r"score\s*<\s*([0-9.]+)\)\s*return\s*\"real\"", src)
-        ai = re.search(r"score\s*>\s*([0-9.]+)\)\s*return\s*\"ai\"", src)
+        real = re.search(r"REAL_MAX\s*:\s*([0-9.]+)", src)
+        ai = re.search(r"AI_MIN\s*:\s*([0-9.]+)", src)
         assert real and ai, "verdict.ts no longer has the expected shape"
         assert float(real.group(1)) == REAL_BELOW
         assert float(ai.group(1)) == AI_ABOVE

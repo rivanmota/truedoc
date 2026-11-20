@@ -1,4 +1,4 @@
-# Local AI Image Detector
+# TrueDoc: local AI image and PDF detector
 
 A local, dependency-light, signal-based AI-generated image detector,
 served behind a `/1.0/check.json` endpoint shaped like
@@ -60,12 +60,27 @@ uvicorn app.main:app --port 8008
 or with Docker:
 
 ```bash
-docker build -t ai-image-detector .
-docker run -p 8008:8008 ai-image-detector
+docker build -t truedoc-api .
+docker run -p 8008:8008 truedoc-api
 ```
+
+## Run the tests
+
+```bash
+python3 -m pip install -r requirements.txt   # includes pytest and httpx
+python3 -m pytest -q
+```
+
+The suite needs no network access. It also exercises the reference files
+in `../baseline/`.
 
 ## Troubleshooting
 
+- **Portrait analysis reports "face detector could not be loaded"** —
+  the OpenCV 5.x wheels ship no Haar cascade files, which the gradients
+  signal needs. `requirements.txt` pins OpenCV 4.x for that reason; don't
+  upgrade `opencv-python-headless` to 5.x without checking
+  `cv2.data.haarcascades` is populated.
 - **`ModuleNotFoundError: No module named 'cv2'` even though you
   activated a venv and installed `requirements.txt`** — this usually
   means the `uvicorn` command your shell is running isn't actually the
@@ -546,8 +561,8 @@ beyond that is silently skipped, not rejected.
 
 ## How it works
 
-Four independent visual signals, weighted and combined (`app/main.py`,
-`WEIGHTS` dict). Thresholds are in physical units (grey levels, grey
+Four independent visual signals, weighted and combined (the
+`WEIGHTS` dict in `app/scoring.py`). Thresholds are in physical units (grey levels, grey
 levels per pixel, log10 power) and each analyzer's docstring explains
 the measured ranges they were set from.
 

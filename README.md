@@ -8,6 +8,7 @@ Local, heuristics-based AI-image/PDF forensics detector.
 truedoc/
 ├── main/   # the app: FastAPI backend + Next.js web UI
 ├── baseline/                  # sample files used to sanity-check the detector
+├── LICENSE / NOTICE           # Apache License 2.0
 └── README.md                  # this file
 ```
 
@@ -37,29 +38,18 @@ truedoc/
 
 ## Testing it
 
-1. **Install and run the API** (no Docker needed for a quick check):
+1. **Install and run the API** (no Docker needed for a quick check).
+   Use a virtual environment (required on macOS and recent Debian/Ubuntu,
+   where system-wide `pip install` is blocked):
 
    ```bash
    cd main
-   pip install -r requirements.txt
-   uvicorn app.main:app --port 8008
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python3 -m pip install -r requirements.txt
+   python3 -m uvicorn app.main:app --port 8008
    ```
 
-    ```
-     -- MacOSFix: use a virtual environment                                                                                                                                              
-     cd /main                                                                                                                                      
-     python3 -m venv .venv                                                                                                                                                       
-     source .venv/bin/activate                                                                                                                                                   
-     python3 -m pip install -r requirements.txt                                                                                                                         
-     uvicorn app.main:app --port 8008 
-    ```
-
-    ```
-    python3 -m venv path/to/venv
-    source path/to/venv/bin/activate
-    python3 -m pip install -r requirements.txt
-    ```
-   
    Or run everything (API + web UI) via Docker instead:
 
    ```bash
@@ -112,6 +102,23 @@ truedoc/
 4. **Or use the web UI** (`http://localhost:3000` after `./run.sh`) to
    drag-and-drop any file from `baseline/` and see the score plus
    per-signal breakdown visually.
+
+## Running the automated tests
+
+```bash
+cd main
+source .venv/bin/activate            # created in step 1 above
+python3 -m pytest -q                 # backend: analyzers, scoring, scan API
+
+cd web
+npm install
+npm test                             # UI logic tests (Node test runner)
+```
+
+The backend suite includes checks against the files in `baseline/` (for
+example, the generated images must score above the "likely real" cut-off
+and the real photo below it). It runs fully offline and takes about a
+minute.
 
 ## Offline use and network requirements
 

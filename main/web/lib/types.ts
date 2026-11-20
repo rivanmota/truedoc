@@ -28,6 +28,11 @@ export interface PageResult {
 export interface CheckResult {
   ai_generated: number;
   signals: SignalSet;
+  /** false when the file had too little content to score (e.g. a PDF with
+   * no raster content and no usable metadata verdict). */
+  score_applicable?: boolean;
+  /** Plain-language note from the engine, e.g. why a file wasn't scorable. */
+  description?: string;
   /** Present only when the input was a PDF. */
   page_count?: number;
   worst_page?: number;

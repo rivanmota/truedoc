@@ -52,6 +52,18 @@ export const VERDICT_COLOR: Record<Verdict, string> = {
   ai: "var(--signal-ai)",
 };
 
+/** One-line plain-language reading of each band, shown in the score legend. */
+export const VERDICT_DESCRIPTION: Record<Verdict, string> = {
+  real: "Signals look consistent with an unaltered, camera-made file.",
+  inconclusive: "Signals are mixed or weak; treat the result as a prompt for a closer look.",
+  ai: "Several signals point toward AI generation or manipulation.",
+};
+
+/** Colour for a 0..1 score: the colour of the verdict band it falls in. */
+export function scoreColor(score: number): string {
+  return VERDICT_COLOR[verdictFor(score)];
+}
+
 /** Per-signal verdict: the same bands, plus "na" for signals that didn't apply. */
 export type SignalVerdict = Verdict | "na";
 
