@@ -113,3 +113,23 @@ truedoc/
    drag-and-drop any file from `baseline/` and see the score plus
    per-signal breakdown visually.
 
+## Offline use and network requirements
+
+The detector runs entirely on your machine: no cloud services, accounts,
+API keys or external AI/LLM APIs are involved, and there is no database.
+Internet access is only needed (a) once, to install dependencies / build
+the Docker images, and (b) for the optional "scan by URL" input, which
+fetches the image you point it at. Uploading a file works fully offline.
+
+## Tech stack
+
+- Backend: Python 3.12+, FastAPI, Uvicorn, NumPy, OpenCV (headless),
+  Pillow, pypdfium2
+- Web UI: Next.js, React, Tailwind CSS, TypeScript
+- Packaging: Docker / Docker Compose
+- Tests: pytest (backend), Node test runner (UI)
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
+
