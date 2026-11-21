@@ -5,30 +5,30 @@
     "compression",
     "scale"
   ],
-  "generated": "2026-11-04T03:57:11",
+  "generated": "2026-11-20T19:35:23",
   "generated_by": "eval/calibrate_weights.py",
   "method": "factor = (retention - false alarm) in bucket / overall; static base weights; absolute down-weighting (see app/main.py _visual_score)",
   "multipliers": {
     "frequency": {
       "compression": {
-        "lossless": 1.119,
-        "jpeg_history": 1.3333,
-        "jpeg_high": 0.9934,
-        "jpeg_mid": 0.9934,
-        "jpeg_low": 0.8325
+        "lossless": 1.1136,
+        "jpeg_history": 1.3926,
+        "jpeg_high": 0.9929,
+        "jpeg_mid": 0.9929,
+        "jpeg_low": 0.8187
       }
     },
     "noise": {
       "compression": {
-        "lossless": 1.0193,
+        "lossless": 1.0095,
         "jpeg_history": 1.0,
-        "jpeg_high": 0.8599,
-        "jpeg_mid": 0.8599,
-        "jpeg_low": 0.8599
+        "jpeg_high": 0.8766,
+        "jpeg_mid": 0.8766,
+        "jpeg_low": 0.8766
       },
       "scale": {
-        "native": 1.153,
-        "upscaled": 0.916
+        "native": 1.1542,
+        "upscaled": 0.9244
       }
     },
     "gradients": {
@@ -46,78 +46,78 @@
     },
     "lighting": {
       "compression": {
-        "lossless": 1.0862,
-        "jpeg_history": 0.5729,
+        "lossless": 1.1014,
+        "jpeg_history": 0.5527,
         "jpeg_high": 1.0086,
         "jpeg_mid": 1.0086,
         "jpeg_low": 1.0086
       },
       "scale": {
-        "native": 0.8228,
-        "upscaled": 1.3107
+        "native": 0.8253,
+        "upscaled": 1.3039
       }
     }
   },
   "confound_tv": {
-    "compression": 0.0139,
-    "size": 0.4618,
-    "scale": 0.0203,
-    "color": 0.3542
+    "compression": 0.0167,
+    "size": 0.4889,
+    "scale": 0.0185,
+    "color": 0.3778
   },
   "held_out": {
     "static": {
-      "auc": 0.6976,
+      "auc": 0.6954,
       "tpr": 0.463,
-      "fpr": 0.092,
-      "balanced_accuracy": 0.6855,
+      "fpr": 0.0981,
+      "balanced_accuracy": 0.6824,
       "ai_likely_ai": 0.0741,
       "real_likely_ai": 0.0,
       "n_ai": 108,
-      "n_real": 576
+      "n_real": 540
     },
     "dynamic: compression": {
-      "auc": 0.6962,
-      "tpr": 0.4537,
-      "fpr": 0.0868,
-      "balanced_accuracy": 0.6834,
+      "auc": 0.6971,
+      "tpr": 0.4444,
+      "fpr": 0.0907,
+      "balanced_accuracy": 0.6769,
       "ai_likely_ai": 0.0741,
       "real_likely_ai": 0.0,
       "n_ai": 108,
-      "n_real": 576,
-      "gain_vs_static": -0.002,
+      "n_real": 540,
+      "gain_vs_static": -0.0056,
       "gain_ci95": [
-        -0.0104,
-        0.0043
+        -0.0241,
+        0.0074
       ]
     },
     "dynamic: scale": {
-      "auc": 0.6973,
+      "auc": 0.6952,
       "tpr": 0.4722,
-      "fpr": 0.0972,
-      "balanced_accuracy": 0.6875,
+      "fpr": 0.1037,
+      "balanced_accuracy": 0.6843,
       "ai_likely_ai": 0.0741,
       "real_likely_ai": 0.0,
       "n_ai": 108,
-      "n_real": 576,
-      "gain_vs_static": 0.002,
+      "n_real": 540,
+      "gain_vs_static": 0.0019,
       "gain_ci95": [
-        -0.0061,
-        0.011
+        -0.0065,
+        0.0111
       ]
     },
     "dynamic: compression+scale": {
-      "auc": 0.6957,
+      "auc": 0.6944,
       "tpr": 0.4722,
-      "fpr": 0.092,
-      "balanced_accuracy": 0.6901,
+      "fpr": 0.0944,
+      "balanced_accuracy": 0.6889,
       "ai_likely_ai": 0.0741,
       "real_likely_ai": 0.0,
       "n_ai": 108,
-      "n_real": 576,
-      "gain_vs_static": 0.0046,
+      "n_real": 540,
+      "gain_vs_static": 0.0065,
       "gain_ci95": [
-        -0.0026,
-        0.013
+        -0.0009,
+        0.0157
       ]
     }
   },
@@ -128,12 +128,11 @@
       "ai-retouched"
     ],
     "genuine": [
-      "human",
+      "real-photo",
       "astronaut",
       "brick",
       "camera",
       "chelsea",
-      "coffee",
       "coins",
       "grass",
       "gravel",
@@ -146,5 +145,5 @@
       "grace_hopper"
     ]
   },
-  "variants": 684
+  "variants": 648
 }

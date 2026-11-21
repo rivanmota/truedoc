@@ -126,12 +126,12 @@ def _generator_png() -> bytes:
     info = PngImagePlugin.PngInfo()
     info.add_text("parameters", "portrait, Steps: 30, Sampler: Euler a")
     buf = io.BytesIO()
-    Image.open(BASELINE / "jpg" / "human.jpeg").save(buf, format="PNG", pnginfo=info)
+    Image.open(BASELINE / "jpg" / "real-photo.jpeg").save(buf, format="PNG", pnginfo=info)
     return buf.getvalue()
 
 
 INPUTS = {
-    "human.jpeg": lambda: (BASELINE / "jpg" / "human.jpeg").read_bytes(),
+    "real-photo.jpeg": lambda: (BASELINE / "jpg" / "real-photo.jpeg").read_bytes(),
     "ai-generated.png": lambda: (BASELINE / "png" / "ai-generated.png").read_bytes(),
     "ai-retouched.png": lambda: (BASELINE / "png" / "ai-retouched.png").read_bytes(),
     "fireplace-generated.png": lambda: (BASELINE / "png" / "fireplace-generated.png").read_bytes(),
@@ -178,15 +178,15 @@ class TestRepeatedScans:
         for body in bodies:
             assert canonical(body) == reference[name], diff_paths(json.loads(reference[name]), comparable(body))
 
-    @pytest.mark.parametrize("name", ["human.jpeg", "photo.pdf"])
+    @pytest.mark.parametrize("name", ["real-photo.jpeg", "photo.pdf"])
     def test_summary_only_is_idempotent_too(self, client, files, name):
         first, second = (_scan(client, name, files[name], details="false")[1] for _ in range(2))
         assert canonical(first) == canonical(second)
 
     def test_exempt_fields_do_vary(self, client, files):
         """Guards the comparison itself: the exemptions are real and present."""
-        a = _scan(client, "human.jpeg", files["human.jpeg"])[1]
-        b = _scan(client, "human.jpeg", files["human.jpeg"])[1]
+        a = _scan(client, "real-photo.jpeg", files["real-photo.jpeg"])[1]
+        b = _scan(client, "real-photo.jpeg", files["real-photo.jpeg"])[1]
         assert a["summary"]["scan_id"] != b["summary"]["scan_id"]
         for body in (a, b):
             for path in EXEMPT:
@@ -203,8 +203,8 @@ class TestRepeatedScans:
 
     def test_filename_is_part_of_the_input(self, client, files):
         # Same bytes, different name: only the echoed filename changes.
-        a = _scan(client, "one.jpeg", files["human.jpeg"])[1]
-        b = _scan(client, "two.jpeg", files["human.jpeg"])[1]
+        a = _scan(client, "one.jpeg", files["real-photo.jpeg"])[1]
+        b = _scan(client, "two.jpeg", files["real-photo.jpeg"])[1]
         assert diff_paths(comparable(a), comparable(b)) == [".details.file.filename"]
 
 
@@ -247,7 +247,7 @@ class TestErrors:
         def boom(_):
             raise RuntimeError(f"internal state {object()!r}")  # an address, different every call
         monkeypatch.setattr(main, "_run_image_analysis", boom)
-        (s1, b1), (s2, b2) = (_scan(client, "human.jpeg", files["human.jpeg"]) for _ in range(2))
+        (s1, b1), (s2, b2) = (_scan(client, "real-photo.jpeg", files["real-photo.jpeg"]) for _ in range(2))
         assert s1 == s2 == 500
         assert canonical(b1) == canonical(b2)
 
@@ -289,7 +289,7 @@ class TestFetchErrorMessages:
 # --------------------------------------------------------------------------- #
 class TestConcurrency:
     def test_concurrent_scans_match_sequential(self, client, files, reference):
-        names = ["ai-generated.png", "photo.pdf", "human.jpeg", "baseline_sample.pdf"] * 4
+        names = ["ai-generated.png", "photo.pdf", "real-photo.jpeg", "baseline_sample.pdf"] * 4
         with cf.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda n: (n, _scan(client, n, files[n])), names))
         for name, (status, body) in results:
@@ -372,7 +372,7 @@ class TestAcrossProcesses:
     @pytest.mark.parametrize("seed", ["1", "4242"])
     def test_fresh_process_with_other_hash_seed_agrees(self, reference, seed):
         paths = {
-            "human.jpeg": BASELINE / "jpg" / "human.jpeg",
+            "real-photo.jpeg": BASELINE / "jpg" / "real-photo.jpeg",
             "ai-generated.png": BASELINE / "png" / "ai-generated.png",
             "anomaly_metadata_sample.pdf": BASELINE / "pdf" / "anomaly_metadata_sample.pdf",
         }
@@ -430,7 +430,7 @@ class TestClock:
 
     def test_images_do_not_depend_on_time(self, client, files, monkeypatch):
         monkeypatch.setattr(scan_api, "_clock", lambda: BEFORE_2030)
-        a = _scan(client, "human.jpeg", files["human.jpeg"])[1]
+        a = _scan(client, "real-photo.jpeg", files["real-photo.jpeg"])[1]
         monkeypatch.setattr(scan_api, "_clock", lambda: AFTER_2030)
-        b = _scan(client, "human.jpeg", files["human.jpeg"])[1]
+        b = _scan(client, "real-photo.jpeg", files["real-photo.jpeg"])[1]
         assert canonical(a) == canonical(b)

@@ -79,7 +79,7 @@ PDF_SUFFIXES = {".pdf"}
 # are reported as "unlisted"; files listed here but missing on disk fail.
 # --------------------------------------------------------------------------- #
 CORPUS_EXPECTATIONS: dict[str, dict[str, Any]] = {
-    "jpg/human.jpeg": {
+    "jpg/real-photo.jpeg": {
         "kind": "image",
         "score": vm.NEUTRAL_SCORE,
         "confidence": "low",

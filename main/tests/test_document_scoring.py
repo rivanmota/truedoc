@@ -986,7 +986,7 @@ class TestImagePathParity:
         assert emb["confidence"] == "medium-high"  # 0.25 + 0.40 + 0.05
 
     def test_realistic_faceless_jpeg_is_now_usable_evidence(self):
-        # human.jpeg: noise unavailable (JPEG grid), no face. Under the old
+        # a faceless JPEG like real-photo.jpeg: noise unavailable (JPEG grid), no face. Under the old
         # PDF weights (frequency 0.05) this was "insufficient"; with the
         # image-path weights it is low-medium evidence that reads as real.
         signals = {

@@ -304,7 +304,7 @@ class TestGradients:
 # --------------------------------------------------------------------------- #
 BASELINE = Path(__file__).resolve().parents[2] / "baseline"
 GENERATED = ["png/fireplace-generated.png", "png/ai-generated.png", "png/ai-retouched.png"]
-GENUINE = ["jpg/human.jpeg"]
+GENUINE = ["jpg/real-photo.jpeg"]
 
 
 def _baseline(rel: str) -> bytes:
@@ -349,7 +349,7 @@ class TestBaseline:
     def test_genuine_photo_saved_as_png_stays_real(self):
         # Used to be the main confound: every genuine sample was a JPEG and
         # every generated one a PNG.
-        data = _reencode(_baseline("jpg/human.jpeg"), "PNG")
+        data = _reencode(_baseline("jpg/real-photo.jpeg"), "PNG")
         assert main._run_image_analysis(data)["ai_generated"] < REAL_CUTOFF
 
     @pytest.mark.parametrize("rel", ["png/ai-generated.png", "png/fireplace-generated.png"])

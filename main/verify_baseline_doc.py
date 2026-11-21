@@ -65,7 +65,7 @@ FLAG_THRESHOLD = 0.40
 PAGE_W, PAGE_H = 612, 792
 
 BASELINE_FILES = {
-    "human": "jpg/human.jpeg",
+    "human": "jpg/real-photo.jpeg",
     "ai_generated": "png/ai-generated.png",
     "ai_retouched": "png/ai-retouched.png",
     "pdf_baseline": "pdf/baseline_sample.pdf",
@@ -349,7 +349,7 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
         {
             "name": "multi_page_one_clearly_worse",
             "description": (
-                "5 pages: native text, human.jpeg, ai-generated.png (page 3, expected worst), "
+                "5 pages: native text, real-photo.jpeg, ai-generated.png (page 3, expected worst), "
                 "BLURRED ai-generated.png (evidence erased, must not be flagged), native text"
             ),
             "pages": [
@@ -364,7 +364,7 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
         },
         {
             "name": "every_ai_page_is_flagged",
-            "description": "4 pages: native text, human.jpeg, ai-retouched.png, ai-generated.png; both AI pages must be flagged, the real photo must not",
+            "description": "4 pages: native text, real-photo.jpeg, ai-retouched.png, ai-generated.png; both AI pages must be flagged, the real photo must not",
             "pages": [
                 text_page(),
                 full_page(rasters["human"]),
@@ -378,7 +378,7 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
             "name": "small_embedded_on_text_page",
             "description": (
                 "3 pages: native text, native text with the AI raster at 1/4 scale (~6% coverage), "
-                "native text with human.jpeg at 1/4 scale"
+                "native text with real-photo.jpeg at 1/4 scale"
             ),
             "pages": [
                 text_page(),
@@ -414,7 +414,7 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
         },
         {
             "name": "generator_metadata_override",
-            "description": "native text + human.jpeg page, Creator field names Midjourney",
+            "description": "native text + real-photo.jpeg page, Creator field names Midjourney",
             "pages": [text_page(), full_page(rasters["human"])],
             "info": {**generic_info, "Creator": "Midjourney Bot v6"},
             "expect": {"metadata_hit": True, "generator_references": ["midjourney"]},
@@ -438,7 +438,7 @@ def build_scenarios(rasters: dict[str, tuple[bytes, tuple[int, int]]]) -> list[d
             "name": "decorative_fills_cannot_drive_risk",
             "description": (
                 "4 pages: text + gradient banner, text + radial vignette, solid full-page vignette, "
-                "text + human.jpeg at 1/4 scale; fills must be gated out, the photo must win"
+                "text + real-photo.jpeg at 1/4 scale; fills must be gated out, the photo must win"
             ),
             "pages": [
                 text_page([place(rasters["gradient_banner"], 0.5, 72, 680)]),
@@ -753,7 +753,7 @@ def step_images(c: Checks, assets: dict[str, bytes], report: dict) -> None:
 
     h, a, r = (report["images"][k]["ai_generated"] for k in ("human", "ai_generated", "ai_retouched"))
     if not (h < a):
-        c.warn(group, "README expectation: ai-generated should score above human.jpeg",
+        c.warn(group, "README expectation: ai-generated should score above real-photo.jpeg",
                f"human={h} ai_generated={a} ai_retouched={r} (heuristic limitation, see README 'Limitations'; not a document.py issue)")
     else:
         c.info(group, "README ordering human < ai_generated holds", f"human={h} ai_generated={a} ai_retouched={r}")

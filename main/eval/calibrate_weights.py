@@ -10,7 +10,7 @@ Calibrate context-dependent signal weights on a synthetic degradation batch.
 Pipeline
 --------
 1. Sources. Labeled images: generated (the baseline PNGs plus --ai-dir)
-   and genuine (baseline/jpg/human.jpeg, the sample photos bundled with
+   and genuine (baseline/jpg/real-photo.jpeg, the sample photos bundled with
    scikit-image / scikit-learn / matplotlib when those packages are
    installed, plus --real-dir). No new generated images are synthesised:
    a fake "AI image" made by this script would only contain whatever
@@ -28,7 +28,7 @@ Pipeline
    With the bundled sources, size and color fail this: the genuine library
    photos are natively small and partly grayscale while the generated ones
    are ~1 MP colour, so "bigger means AI" would be learned (megapixels
-   alone reach AUC ~0.78 on the batch, better than the detector).
+   alone reach AUC ~0.80 on the batch, better than the detector).
 5. Fit. Only degradation behaviour is learned, never *which* signal
    indicates AI: with a handful of generators every generator has its own
    tell, and any model that learns tells from some generators inverts on
@@ -120,7 +120,7 @@ def _library_photos() -> list[Path]:
     """Genuine photographs bundled with common scientific Python packages."""
     wanted = {
         "skimage": ["data/astronaut.png", "data/brick.png", "data/camera.png", "data/chelsea.png",
-                    "data/coffee.png", "data/coins.png", "data/grass.png", "data/gravel.png",
+                    "data/coins.png", "data/grass.png", "data/gravel.png",
                     "data/moon.png", "data/motorcycle_left.png", "data/motorcycle_right.png",
                     "data/rocket.jpg"],
         "sklearn": ["datasets/images/china.jpg", "datasets/images/flower.jpg"],
@@ -146,7 +146,7 @@ def _images_in(directory: str | None) -> list[Path]:
 
 def collect_sources(args) -> list[dict]:
     ai = [BASELINE_DIR / "png" / n for n in ("fireplace-generated.png", "ai-generated.png", "ai-retouched.png")]
-    real = [BASELINE_DIR / "jpg" / "human.jpeg"]
+    real = [BASELINE_DIR / "jpg" / "real-photo.jpeg"]
     if not args.no_library:
         real += _library_photos()
     ai += _images_in(args.ai_dir)

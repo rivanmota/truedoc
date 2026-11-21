@@ -28,7 +28,7 @@ from app import scan_validation as validation
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "baseline"
-HUMAN = BASELINE / "jpg" / "human.jpeg"
+HUMAN = BASELINE / "jpg" / "real-photo.jpeg"
 AI = BASELINE / "png" / "ai-generated.png"
 FIREPLACE = BASELINE / "png" / "fireplace-generated.png"
 TEXT_PDF = BASELINE / "pdf" / "baseline_sample.pdf"
@@ -199,7 +199,7 @@ class TestContract:
         content = HUMAN.read_bytes()
         f = human["details"]["file"]
         assert f["source"] == "upload"
-        assert f["filename"] == "human.jpeg"
+        assert f["filename"] == "real-photo.jpeg"
         assert f["url"] is None
         assert f["size_bytes"] == len(content)
         assert f["sha256"] == hashlib.sha256(content).hexdigest()
@@ -325,16 +325,16 @@ class TestMetadata:
 @pytest.mark.usefixtures("allow_private_urls")
 class TestUrlInput:
     def test_scan_by_url(self, client, file_server):
-        url = f"{file_server}/jpg/human.jpeg"
+        url = f"{file_server}/jpg/real-photo.jpeg"
         body = _scan(client, url=url).json()
         assert body["details"]["file"]["source"] == "url"
         assert body["details"]["file"]["url"] == url
-        assert body["details"]["file"]["filename"] == "human.jpeg"
+        assert body["details"]["file"]["filename"] == "real-photo.jpeg"
         assert body["details"]["file"]["sha256"] == hashlib.sha256(HUMAN.read_bytes()).hexdigest()
-        assert body["summary"]["final_score"] == _legacy_score(client, HUMAN.read_bytes(), "human.jpeg")
+        assert body["summary"]["final_score"] == _legacy_score(client, HUMAN.read_bytes(), "real-photo.jpeg")
 
     def test_url_encoded_body(self, client, file_server):
-        resp = client.post("/api/v1/scans", data={"url": f"{file_server}/jpg/human.jpeg", "details": "false"})
+        resp = client.post("/api/v1/scans", data={"url": f"{file_server}/jpg/real-photo.jpeg", "details": "false"})
         assert resp.status_code == 200, resp.text
         assert list(resp.json()) == ["summary"]
 
@@ -356,19 +356,19 @@ class TestUrlInput:
 
     def test_url_download_size_limit(self, client, file_server, monkeypatch):
         monkeypatch.setattr(validation, "MAX_FILE_BYTES", 1000)
-        assert_error(_scan(client, url=f"{file_server}/jpg/human.jpeg"), 413, "file_too_large")
+        assert_error(_scan(client, url=f"{file_server}/jpg/real-photo.jpeg"), 413, "file_too_large")
 
     def test_downloaded_file_is_validated_like_an_upload(self, client, file_server):
         # Same content checks as an upload: here, not a PNG/JPEG/PDF.
         assert_error(_scan(client, url=f"{file_server}/not-an-image"), 415, "unsupported_format")
 
     def test_redirects_are_followed(self, client, file_server):
-        resp = _scan(client, url=f"{file_server}/redirect/3/jpg/human.jpeg", details="false")
+        resp = _scan(client, url=f"{file_server}/redirect/3/jpg/real-photo.jpeg", details="false")
         assert resp.status_code == 200, resp.text
 
     def test_too_many_redirects(self, client, file_server):
         err = assert_error(
-            _scan(client, url=f"{file_server}/redirect/{scan_api.MAX_REDIRECTS + 1}/jpg/human.jpeg"),
+            _scan(client, url=f"{file_server}/redirect/{scan_api.MAX_REDIRECTS + 1}/jpg/real-photo.jpeg"),
             502, "url_fetch_failed",
         )
         assert "redirects" in err["message"]
@@ -396,7 +396,7 @@ class TestUrlHostPolicy:
         # loopback as private; the redirect must be re-checked at each hop.
         monkeypatch.setattr(validation, "is_public_address", lambda a: a == "127.0.0.1")
         port = file_server.rsplit(":", 1)[1]
-        resp = _scan(client, url=f"{file_server}/redirect-to?http://127.0.0.2:{port}/jpg/human.jpeg")
+        resp = _scan(client, url=f"{file_server}/redirect-to?http://127.0.0.2:{port}/jpg/real-photo.jpeg")
         assert_error(resp, 400, "url_not_allowed")
 
     def test_unresolvable_host(self, client):
@@ -451,7 +451,7 @@ class TestErrors:
         monkeypatch.setattr(main, "_run_image_analysis", must_not_run)
         monkeypatch.setattr(validation, "MAX_IMAGE_PIXELS", 1000)
         err = self._assert_error(_scan(client, HUMAN), 422, "image_too_large")
-        assert "738x1280" in err["message"]
+        assert "600x400" in err["message"]
 
     def test_unexpected_failure_is_500_without_internals(self, client, monkeypatch):
         def boom(_):
@@ -645,7 +645,7 @@ class TestDetailsFlag:
         assert "details" in human
 
     def test_with_url_input(self, client, file_server, allow_private_urls):
-        body = _scan(client, url=f"{file_server}/jpg/human.jpeg", details="false").json()
+        body = _scan(client, url=f"{file_server}/jpg/real-photo.jpeg", details="false").json()
         assert list(body) == ["summary"]
 
     def test_pdf_summary_only(self, client, photo_pdf_bytes, photo_pdf):

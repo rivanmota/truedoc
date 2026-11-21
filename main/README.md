@@ -193,7 +193,7 @@ Run these from the repo root (the `baseline/` paths are relative to it).
 ```bash
 # Full response (summary + details) for an image
 curl -s -X POST http://localhost:8008/api/v1/scans \
-  -F 'file=@baseline/jpg/human.jpeg' | python3 -m json.tool
+  -F 'file=@baseline/jpg/real-photo.jpeg' | python3 -m json.tool
 
 # Summary only: the critical information, nothing else
 curl -s -X POST http://localhost:8008/api/v1/scans \
@@ -230,13 +230,13 @@ With `details=false`, this is the whole response:
     "http_status": 200,
     "status": "completed",
     "thresholds": { "likely_real_below": 0.35, "likely_ai_above": 0.65 },
-    "final_score": 0.0379,
+    "final_score": 0.0543,
     "classification": "likely_real",
     "label": "Likely a true doc",
     "confidence": "low-medium",
     "explanation": "Likely a true doc (low-medium confidence). Signals used: frequency, lighting. Not applicable or not used: noise, gradients.",
-    "scan_id": "scn_2be1099714cf4101bcb2e9f7e46f74c7",
-    "timestamp": "2026-11-05T05:13:11.638Z",
+    "scan_id": "scn_5d17ab06e3484ba8b7da09d0a664d9f7",
+    "timestamp": "2026-11-21T01:35:43.167Z",
     "engine_version": "0.3.4"
   }
 }
@@ -249,29 +249,29 @@ signals):
 {
   "summary": { "…": "as above" },
   "details": {
-    "duration_ms": 456,
+    "duration_ms": 142,
     "engine": {
       "name": "truedoc-forensics", "version": "0.3.4",
       "weighting": "dynamic: compression+scale",
-      "calibration_generated": "2026-11-04T03:57:11"
+      "calibration_generated": "2026-11-20T19:35:23"
     },
     "file": {
-      "source": "upload", "filename": "human.jpeg", "url": null,
-      "size_bytes": 114695, "sha256": "ccd605bc…",
+      "source": "upload", "filename": "real-photo.jpeg", "url": null,
+      "size_bytes": 51200, "sha256": "6751cea1…",
       "format": "jpeg", "mime_type": "image/jpeg",
-      "width": 738, "height": 1280, "page_count": null
+      "width": 600, "height": 400, "page_count": null
     },
     "evidence": {
       "frequency": {
         "signal": "frequency", "label": "Frequency spectrum",
         "applicable": true, "used_in_score": true,
         "score": 0.0, "verdict": "likely_real", "confidence": "medium",
-        "weight": 0.9031, "effect": "weighted",
+        "weight": 0.9026, "effect": "weighted",
         "explanation": "a spectrum that follows the natural power law and then collapses in the top band (a knee) indicates the image was enlarged …",
         "measurements": {
-          "spectral_slope": -2.379, "mid_band_deviation": 0.01,
-          "high_band_deviation": -0.341, "high_band_knee_drop": 0.351,
-          "spectrum_tiles": "16 x 512px"
+          "spectral_slope": -2.867, "mid_band_deviation": -0.06,
+          "high_band_deviation": -0.143, "high_band_knee_drop": 0.083,
+          "spectrum_tiles": "4 x 400px"
         }
       },
       "noise": {
@@ -281,8 +281,8 @@ signals):
         "weight": 0.0, "effect": "not_used",
         "explanation": "noise floor unavailable as evidence: an aligned JPEG grid shows quantisation has reshaped the grain …",
         "measurements": {
-          "floor_state": "reshaped_by_jpeg", "flat_block_count": 1552,
-          "jpeg_grid_detected": true, "noise_sigma_median": 0.133, "…": "…"
+          "floor_state": "reshaped_by_jpeg", "flat_block_count": 174,
+          "jpeg_grid_detected": true, "noise_sigma_median": 0.297, "…": "…"
         }
       },
       "gradients": { "…": "…" },
@@ -290,13 +290,13 @@ signals):
       "metadata":  { "…": "…" }
     },
     "scoring": {
-      "visual_score": 0.0379, "metadata_effect": "neutral",
+      "visual_score": 0.0543, "metadata_effect": "neutral",
       "applicable_signals": ["frequency", "lighting"],
       "insufficient_evidence": false, "single_signal_cap_applied": false,
       "gradients_weight_redistributed_to": ["frequency"],
-      "context_multipliers": { "frequency": 0.9934, "noise": 0.9915, "gradients": 1.0931, "lighting": 0.8299 },
-      "context_discount": 0.0215,
-      "context": { "format": "jpeg", "jpeg_quality_estimate": 75, "…": "…" }
+      "context_multipliers": { "frequency": 0.9929, "noise": 1.0118, "gradients": 1.0931, "lighting": 0.8324 },
+      "context_discount": 0.0217,
+      "context": { "format": "jpeg", "jpeg_quality_estimate": 82, "…": "…" }
     }
   }
 }
@@ -631,21 +631,21 @@ validates leave-one-source-out and only writes dynamic factors
 (`app/weighting_calibration.json`) if they don't do worse than static
 weights on held-out sources. The full numbers are in
 [`eval/REPORT.md`](eval/REPORT.md). Current state, from 3 generated and
-16 genuine sources (684 variants):
+15 genuine sources (648 variants):
 
 - **Adopted: compression + scale factors.** For example, frequency gets
-  1.12x on lossless, 0.99x on JPEG q75-94 and 0.83x below q75; noise
-  0.86x under JPEG; gradients 0.88x on upscaled images, where upscaling
+  1.11x on lossless, 0.99x on JPEG q75-94 and 0.82x below q75; noise
+  0.88x under JPEG; gradients 0.88x on upscaled images, where upscaling
   smooths genuine skin.
 - **It is not a measured improvement.** On held-out sources, balanced
-  accuracy is 69.0% vs 68.5% for static weights (95% CI of the
-  difference -0.3 to +1.3 points), with the same 9.2% false-positive
-  rate. It was adopted because it's non-inferior and the factors follow
+  accuracy is 68.9% vs 68.2% for static weights (95% CI of the
+  difference -0.1 to +1.6 points), with a similar false-positive
+  rate (9.4% vs 9.8%). It was adopted because it's non-inferior and the factors follow
   the physics, not because it wins.
 - **Size and colour are not fitted.** In the available sources they're
   confounded with the label: the genuine library photos are small and
   partly grayscale, the generated ones ~1 MP colour, so megapixels alone
-  "detect" AI at AUC 0.78. Factors fitted on them would learn that.
+  "detect" AI at AUC 0.80. Factors fitted on them would learn that.
   Adding large colour genuine photos (`--real-dir`) fixes this
   automatically.
 - **Which signal indicates AI is deliberately not learned.** Each of the
@@ -719,8 +719,17 @@ anything.
 - **Known false positives.** Film scans and some high-ISO photos carry
   stationary, white grain that `noise` can't tell from synthetic grain
   (skimage's `astronaut.png`, a scanned NASA portrait, scores ~0.50).
-  Real photos that were *upscaled* trip `frequency` (a 1.41x bicubic
-  upscale of `human.jpeg` scores ~0.44).
+  Real photos that were *upscaled* trip `frequency`: in the synthetic
+  batch (`eval/REPORT.md`) genuine variants rescaled to 1.5x are flagged
+  about a third of the time, and a 1.41x bicubic upscale of one genuine
+  phone JPEG scored ~0.44 in an earlier measurement. The bundled
+  `real-photo.jpeg` stays low (~0.12) when upscaled the same way.
+- **Re-saved JPEGs can slip past the noise gate.** The `noise` signal
+  steps aside when it detects an aligned JPEG 8x8 grid. On small images
+  that were JPEG-compressed twice at different qualities the grid is not
+  always detected, so `noise` stays active and can read the (smoothed)
+  grain as synthetic. On the bundled `real-photo.jpeg` the final score
+  stays low either way, but this is a known weak spot.
 - **PDF pages inherit the same limitations.** The PDF layer avoids
   adding its own resampling:
   - Embedded images are extracted as their own decoded pixels (not drawn
@@ -762,7 +771,7 @@ anything.
   a minor corroborating factor, not evidence.
 - **Thresholds were set from a small set of measurements, not fit to a
   labeled dataset.** They came from the three generated baseline images,
-  `human.jpeg`, fifteen genuine photos bundled with
+  `real-photo.jpeg`, fifteen genuine photos bundled with
   scikit-image/scikit-learn/matplotlib (most non-portrait, several
   lossless PNG so format can't stand in for authenticity), and
   re-encoded/resized/upscaled variants of each. On that set every

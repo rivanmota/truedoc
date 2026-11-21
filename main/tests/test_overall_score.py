@@ -175,7 +175,7 @@ ARCHETYPES = [
         "one strong tell, contradicted by a clean spectrum: flagged, not 'likely AI'",
     ),
     (
-        "genuine phone JPEG (human.jpeg)",
+        "genuine phone JPEG (no face, noise N/A)",
         dict(frequency=S(0.0), lighting=S(0.502, "low"),
              buckets={"compression": "jpeg_mid", "size": "medium", "scale": "native", "color": "color"}),
         # noise N/A (JPEG grid), no face: frequency gets 0.25 + all of gradients' 0.25
@@ -192,7 +192,7 @@ ARCHETYPES = [
         "film grain looks like synthetic grain; natural skin keeps it out of 'likely AI'",
     ),
     (
-        "genuine photo upscaled 1.41x (human.jpeg) - KNOWN FALSE POSITIVE",
+        "genuine phone photo upscaled 1.41x - KNOWN FALSE POSITIVE",
         dict(frequency=S(0.434), lighting=S(0.516, "low"),
              buckets={"compression": "lossless", "size": "medium", "scale": "upscaled", "color": "color"}),
         (0.50 * 0.434 + L_EFF * 0.516) / (0.50 + L_EFF),

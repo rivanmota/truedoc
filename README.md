@@ -23,8 +23,10 @@ truedoc/
   the API/response shapes.
 - **`baseline/`** — a small set of reference files to exercise the
   detector with, grouped by type:
-  - `baseline/jpg/human.jpeg` — a real, unedited photo (expected to
-    score low on `ai_generated`).
+  - `baseline/jpg/real-photo.jpeg` — a real, unedited photo of a coffee
+    cup (expected to score low on `ai_generated`). This is scikit-image's
+    `coffee` sample, CC0 / public domain by Rachel Michetti, re-saved as
+    a JPEG (quality 82, no metadata).
   - `baseline/png/ai-generated.png` — a fully AI-generated image
     (expected to score high).
   - `baseline/png/fireplace-generated.png` — a fully AI-generated
@@ -62,7 +64,7 @@ truedoc/
 
    ```bash
    curl -s -X POST 'http://localhost:8008/1.0/check.json' \
-     -F 'media=@baseline/jpg/human.jpeg' -F 'models=genai' | python3 -m json.tool
+     -F 'media=@baseline/jpg/real-photo.jpeg' -F 'models=genai' | python3 -m json.tool
 
    curl -s -X POST 'http://localhost:8008/1.0/check.json' \
      -F 'media=@baseline/png/ai-generated.png' -F 'models=genai' | python3 -m json.tool

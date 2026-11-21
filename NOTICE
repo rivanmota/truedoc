@@ -2,3 +2,9 @@ TrueDoc
 Copyright 2026 Rivan Mota
 
 This product includes software developed by Rivan Mota.
+
+Third-party material
+--------------------
+baseline/jpg/real-photo.jpeg is derived from the "coffee" sample image
+distributed with scikit-image (https://github.com/scikit-image/scikit-image),
+dedicated to the public domain under CC0 by its photographer, Rachel Michetti.

@@ -126,7 +126,7 @@ class TestSameJpegSameScore:
     @pytest.mark.parametrize("rel,band", [
         ("png/fireplace-generated.png", "flagged"),
         ("png/ai-generated.png", "flagged"),
-        ("jpg/human.jpeg", "real"),
+        ("jpg/real-photo.jpeg", "real"),
     ])
     def test_baseline_pictures(self, rel, band):
         path = BASELINE / rel
@@ -156,9 +156,9 @@ class TestSameJpegSameScore:
         assert result["classification"] in {"suspicious_raster_content", "likely_ai_generated"}
 
     def test_genuine_photo_in_a_pdf_is_usable_and_reads_real(self):
-        path = BASELINE / "jpg/human.jpeg"
+        path = BASELINE / "jpg/real-photo.jpeg"
         if not path.exists():
-            pytest.skip("human.jpeg not present")
+            pytest.skip("real-photo.jpeg not present")
         result = main._run_pdf_analysis(pdf_with(Image.open(path), 95))
         assert result["score_applicable"] is True
         assert result["flagged_pages"] == []
@@ -354,9 +354,9 @@ class TestPageRenderStep:
         # Regression for the false positive the render step produced before
         # renders were drawn 1:1 without smoothing: smoothing blurred the top
         # band and the frequency signal read it as an upscaling knee.
-        path = BASELINE / "jpg/human.jpeg"
+        path = BASELINE / "jpg/real-photo.jpeg"
         if not path.exists():
-            pytest.skip("human.jpeg not present")
+            pytest.skip("real-photo.jpeg not present")
         buf = io.BytesIO()
         Image.open(path).convert("RGB").save(buf, "PDF", quality=95, resolution=86.82)
         result = main._run_pdf_analysis(buf.getvalue())
