@@ -106,6 +106,12 @@ NONINFERIORITY_MARGIN = 0.01
 # jpeg_history (JPEG traces in a PNG, quality unknown) is left unordered.
 MONOTONE_ORDER = {"compression": ("lossless", "jpeg_high", "jpeg_mid", "jpeg_low")}
 BOOTSTRAP_ROUNDS = 2000
+# Below this many genuine sources the fit is meaningless (leave-one-source-out
+# with one or two real photos), and running it would overwrite the committed
+# calibration with it. The sample-photo packages (scikit-image & co.) need
+# internet to install and may have no wheel for the desktop's Python, so a
+# machine without them ends up with only baseline/jpg/real-photo.jpeg.
+MIN_GENUINE_SOURCES = 5
 
 SIGNALS = weighting.SIGNALS
 # The scale bucket is read off the frequency knee; fitting frequency's own
@@ -612,10 +618,19 @@ def main() -> int:
     ap.add_argument("--no-library", action="store_true", help="don't use package-bundled sample photos")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2)))
     ap.add_argument("--dry-run", action="store_true", help="write the report but not the calibration JSON")
+    ap.add_argument("--allow-small", action="store_true",
+                    help=f"run even with fewer than {MIN_GENUINE_SOURCES} genuine sources (results are not meaningful)")
     args = ap.parse_args()
 
     workdir = Path(args.workdir)
     sources = collect_sources(args)
+    genuine = sum(1 for s in sources if s["label"] == 0)
+    if genuine < MIN_GENUINE_SOURCES and not args.allow_small:
+        print(f"only {genuine} genuine source(s) found, need at least {MIN_GENUINE_SOURCES}; nothing was changed.\n"
+              "The packaged sample photos come from scikit-image, scikit-learn and matplotlib, which are not "
+              "installed here (or have no wheel for this Python). Supply your own with "
+              "--real-dir DIR (and --ai-dir DIR), or pass --allow-small to run anyway.", file=sys.stderr)
+        return 2
     cache = workdir / "signals.jsonl"
     if args.reuse and cache.exists():
         records = [json.loads(line) for line in cache.open()]

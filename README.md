@@ -40,7 +40,8 @@ truedoc/
 
 ## Testing it
 
-1. **Install and run the API** (no Docker needed for a quick check).
+1. **Install and run the API** (no Docker needed; `./init.sh --api-only`
+   in `main/` does the same in one step).
    Use a virtual environment (required on macOS and recent Debian/Ubuntu,
    where system-wide `pip install` is blocked):
 
@@ -126,9 +127,22 @@ minute.
 
 The detector runs entirely on your machine: no cloud services, accounts,
 API keys or external AI/LLM APIs are involved, and there is no database.
-Internet access is only needed (a) once, to install dependencies / build
-the Docker images, and (b) for the optional "scan by URL" input, which
-fetches the image you point it at. Uploading a file works fully offline.
+Internet access is only needed (a) once, to install dependencies, and
+(b) for the optional "scan by URL" input, which fetches the image you point
+it at. Uploading a file works fully offline. There is no GPU, audio,
+Docker or Windows-only requirement; Docker is an optional packaging.
+
+```bash
+cd main
+./init.sh --check        # is this machine ready? read-only, no network
+./init.sh --api-only     # run the API without Node
+./init.sh --offline      # full run, never reaches for the network
+```
+
+To provision a machine with no internet, run `./init.sh --prepare-offline`
+on a connected machine of the same OS/CPU/Python, copy `main/` across, then
+use `./init.sh --offline`. Details: "Offline desktop" in
+[`main/README.md`](main/README.md).
 
 ## Tech stack
 

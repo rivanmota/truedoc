@@ -17,7 +17,11 @@ URL, get the score plus the per-signal breakdown that produced it.
 file's actual bytes, not trusted from the filename or upload
 Content-Type. Anything else is rejected with a clear error.
 
-## Run everything (API + UI) on Docker
+## Run everything (API + UI) on Docker (optional)
+
+Docker is only one way to run TrueDoc and is not required: see
+"Local development" and "Offline desktop" below for running without Docker
+and without internet.
 
 ```bash
 ./run.sh
@@ -39,16 +43,53 @@ Prerequisites: **Python 3.12+** and **Node 22+**.
 ./init.sh
 ```
 
-This installs `libgl1`/`libglib2.0-0` via `apt-get` if missing and
-`apt-get` is available (needed by `opencv-python-headless` at import
-time, as in `Dockerfile`), sets up (or reuses) a `.venv`, installs
-`requirements.txt`, installs `web/node_modules` if missing, then
-starts the API (`uvicorn app.main:app --reload`) on
+This sets up (or reuses) a `.venv`, installs `requirements.txt` and
+`web/node_modules` **only if they are missing**, runs `check_env.py` as a
+gate, then starts the API (`uvicorn app.main:app --reload`) on
 **http://localhost:8008** and the UI (`next dev`) on
 **http://localhost:3000** — no containers, no image builds, with hot
-reload on both sides. Press `Ctrl-C` to stop both.
+reload on both sides. On Debian/Ubuntu it also installs
+`libgl1`/`libglib2.0-0` with `apt-get` if they are missing (needed by
+`opencv-python-headless` at import time, as in `Dockerfile`). Press
+`Ctrl-C` to stop both.
 
 `./run.sh` remains available as the Docker-based alternative.
+
+## Offline desktop (no internet, no Docker, no GPU)
+
+Nothing in TrueDoc needs a network, a GPU, Docker, audio, a cloud service
+or Windows. The scanners are plain NumPy / OpenCV / Pillow / pypdfium2 on
+the CPU. The only things that touch the internet are installing
+dependencies and the optional "scan by URL" input. `tests/test_offline.py`
+enforces this by blocking every socket and DNS call and scanning all the
+baseline files.
+
+```bash
+./init.sh --check          # read-only: is this machine ready? (no network, installs nothing)
+./init.sh --api-only       # API only, no Node needed (use curl or the scan API)
+./init.sh --offline        # full run; fails with a clear message instead of reaching for the network
+```
+
+`check_env.py` verifies the Python version, every backend import, that
+OpenCV can load its face detector, and Node / `web/node_modules`.
+
+To prepare a machine that has no internet, on a machine **with** internet
+(same OS, CPU architecture and Python version as the target):
+
+```bash
+./init.sh --prepare-offline   # downloads ./wheelhouse and fills web/node_modules
+```
+
+then copy the whole `main/` directory over and run `./init.sh --offline`.
+When `./wheelhouse` exists, `init.sh` installs from it with `--no-index`.
+
+What does not work offline: "scan by URL" (it returns a normal
+`url_fetch_failed` error; file upload is unaffected) and fetching new
+benchmark images. `eval/calibrate_weights.py` also refuses to run (and
+leaves `app/weighting_calibration.json` untouched) when it finds fewer than
+5 genuine sources, which is what happens without scikit-image,
+scikit-learn and matplotlib; supply your own images with `--real-dir` /
+`--ai-dir`.
 
 ## Run just the API
 
@@ -71,16 +112,18 @@ python3 -m pip install -r requirements.txt   # includes pytest and httpx
 python3 -m pytest -q
 ```
 
-The suite needs no network access. It also exercises the reference files
-in `../baseline/`.
+The suite needs no network access (`tests/test_offline.py` fails if any
+code path tries). It also exercises the reference files in `../baseline/`.
 
 ## Troubleshooting
 
 - **Portrait analysis reports "face detector could not be loaded"** —
-  the OpenCV 5.x wheels ship no Haar cascade files, which the gradients
-  signal needs. `requirements.txt` pins OpenCV 4.x for that reason; don't
-  upgrade `opencv-python-headless` to 5.x without checking
-  `cv2.data.haarcascades` is populated.
+  the OpenCV 5.x wheels have no `cv2.CascadeClassifier` at all, which the
+  gradients signal needs. `requirements.txt` pins OpenCV 4.x for that
+  reason; don't upgrade `opencv-python-headless` to 5.x. Without it the
+  portrait signal is skipped and scores shift, and three baseline tests
+  fail. `./init.sh --check` (or `python3 check_env.py`) reports this up
+  front; `pip install -r requirements.txt` fixes it.
 - **`ModuleNotFoundError: No module named 'cv2'` even though you
   activated a venv and installed `requirements.txt`** — this usually
   means the `uvicorn` command your shell is running isn't actually the

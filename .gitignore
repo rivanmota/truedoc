@@ -38,3 +38,5 @@ main/web/out/
 .junie/
 .git/
 .*/
+
+wheelhouse/
