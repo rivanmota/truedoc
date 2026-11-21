@@ -8,3 +8,15 @@ Third-party material
 baseline/jpg/real-photo.jpeg is derived from the "coffee" sample image
 distributed with scikit-image (https://github.com/scikit-image/scikit-image),
 dedicated to the public domain under CC0 by its photographer, Rachel Michetti.
+
+baseline/png/ai-generated.png and baseline/png/fireplace-generated.png were
+generated on 2026-11-20 with Cursor's built-in image generation tool from
+text prompts (a fictional person in a studio; a lit stone fireplace in a
+living room). They depict no real person. The tool delivered JPEG; the files
+are the same pixels saved as PNG. They are contributed by the author under
+the Apache License 2.0.
+
+baseline/png/ai-retouched.png is baseline/jpg/real-photo.jpeg (above, CC0)
+edited with the same tool using that photo as the reference image, saved as
+PNG. The edit is contributed by the author under the Apache License 2.0; the
+underlying photograph remains CC0.

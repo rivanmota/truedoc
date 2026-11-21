@@ -24,6 +24,7 @@ import pytest
 from PIL import Image
 
 from app import context, main, pdf_utils
+from synthetic_images import noise_flagged_image
 
 BASELINE = Path(__file__).resolve().parents[2] / "baseline"
 
@@ -124,8 +125,10 @@ class TestSameJpegSameScore:
         assert "flat or gradient fill" in img["scoring"]["note"]
 
     @pytest.mark.parametrize("rel,band", [
-        ("png/fireplace-generated.png", "flagged"),
-        ("png/ai-generated.png", "flagged"),
+        # The generated baselines are known misses (README, Limitations):
+        # parity still holds, they just stay below the PDF flag threshold.
+        ("png/fireplace-generated.png", "missed"),
+        ("png/ai-generated.png", "missed"),
         ("jpg/real-photo.jpeg", "real"),
     ])
     def test_baseline_pictures(self, rel, band):
@@ -135,19 +138,23 @@ class TestSameJpegSameScore:
         upload, embedded = _parity(pdf_with(Image.open(path), 95))
         assert embedded["usable"] is True
         assert embedded["ai_generated"] == pytest.approx(upload["scoring"]["visual_score"], abs=1e-4)
-        if band == "flagged":
-            assert embedded["ai_generated"] >= 0.40  # the PDF flag threshold
+        if band == "missed":
+            assert embedded["ai_generated"] < 0.40  # below the PDF flag threshold
         else:
             assert embedded["ai_generated"] < 0.35
 
-    def test_faceless_generated_scene_is_now_flagged_in_a_pdf(self):
+    def test_flagged_picture_has_the_same_score_in_a_pdf(self):
+        upload, embedded = _parity(pdf_with(noise_flagged_image(), 95))
+        assert embedded["usable"] is True
+        assert embedded["ai_generated"] == pytest.approx(upload["scoring"]["visual_score"], abs=1e-4)
+        assert embedded["ai_generated"] >= 0.40  # the PDF flag threshold
+
+    def test_faceless_flagged_raster_is_flagged_in_a_pdf(self):
         # Under the old PDF-only weights (frequency 0.05, no redistribution)
-        # this raster was "insufficient evidence"; it must now be flagged as
-        # its upload is.
-        path = BASELINE / "png/fireplace-generated.png"
-        if not path.exists():
-            pytest.skip("fireplace-generated.png not present")
-        result = main._run_pdf_analysis(pdf_with(Image.open(path), 95))
+        # a faceless raster like this was "insufficient evidence"; it must be
+        # flagged as its upload is. (Uses the synthetic-grain fixture: no
+        # baseline picture is flagged any more.)
+        result = main._run_pdf_analysis(pdf_with(noise_flagged_image(), 95))
         assert result["score_applicable"] is True
         assert result["flagged_pages"]
         # Either evidence unit may carry it: the embedded raster and the

@@ -1,123 +1,71 @@
 {
   "version": 2,
-  "weighting": "dynamic: compression+scale",
-  "dimensions": [
-    "compression",
-    "scale"
-  ],
-  "generated": "2026-11-20T19:35:23",
+  "weighting": "static",
+  "dimensions": [],
+  "generated": "2026-11-20T20:41:00",
   "generated_by": "eval/calibrate_weights.py",
   "method": "factor = (retention - false alarm) in bucket / overall; static base weights; absolute down-weighting (see app/main.py _visual_score)",
-  "multipliers": {
-    "frequency": {
-      "compression": {
-        "lossless": 1.1136,
-        "jpeg_history": 1.3926,
-        "jpeg_high": 0.9929,
-        "jpeg_mid": 0.9929,
-        "jpeg_low": 0.8187
-      }
-    },
-    "noise": {
-      "compression": {
-        "lossless": 1.0095,
-        "jpeg_history": 1.0,
-        "jpeg_high": 0.8766,
-        "jpeg_mid": 0.8766,
-        "jpeg_low": 0.8766
-      },
-      "scale": {
-        "native": 1.1542,
-        "upscaled": 0.9244
-      }
-    },
-    "gradients": {
-      "compression": {
-        "lossless": 0.9953,
-        "jpeg_history": 1.103,
-        "jpeg_high": 0.9953,
-        "jpeg_mid": 0.9953,
-        "jpeg_low": 0.9648
-      },
-      "scale": {
-        "native": 1.0983,
-        "upscaled": 0.8765
-      }
-    },
-    "lighting": {
-      "compression": {
-        "lossless": 1.1014,
-        "jpeg_history": 0.5527,
-        "jpeg_high": 1.0086,
-        "jpeg_mid": 1.0086,
-        "jpeg_low": 1.0086
-      },
-      "scale": {
-        "native": 0.8253,
-        "upscaled": 1.3039
-      }
-    }
-  },
+  "multipliers": {},
   "confound_tv": {
-    "compression": 0.0167,
-    "size": 0.4889,
-    "scale": 0.0185,
+    "compression": 0.0111,
+    "size": 0.4333,
+    "scale": 0.0093,
     "color": 0.3778
   },
   "held_out": {
     "static": {
-      "auc": 0.6954,
-      "tpr": 0.463,
+      "auc": 0.5504,
+      "tpr": 0.2778,
       "fpr": 0.0981,
-      "balanced_accuracy": 0.6824,
-      "ai_likely_ai": 0.0741,
+      "balanced_accuracy": 0.5898,
+      "ai_likely_ai": 0.0556,
       "real_likely_ai": 0.0,
       "n_ai": 108,
       "n_real": 540
     },
     "dynamic: compression": {
-      "auc": 0.6971,
-      "tpr": 0.4444,
-      "fpr": 0.0907,
-      "balanced_accuracy": 0.6769,
-      "ai_likely_ai": 0.0741,
+      "auc": 0.5618,
+      "tpr": 0.2407,
+      "fpr": 0.063,
+      "balanced_accuracy": 0.5889,
+      "ai_likely_ai": 0.037,
       "real_likely_ai": 0.0,
       "n_ai": 108,
       "n_real": 540,
-      "gain_vs_static": -0.0056,
+      "gain_vs_static": -0.0009,
       "gain_ci95": [
-        -0.0241,
-        0.0074
+        -0.0185,
+        0.0194
       ]
     },
     "dynamic: scale": {
-      "auc": 0.6952,
-      "tpr": 0.4722,
-      "fpr": 0.1037,
-      "balanced_accuracy": 0.6843,
-      "ai_likely_ai": 0.0741,
+      "auc": 0.5471,
+      "tpr": 0.2778,
+      "fpr": 0.1019,
+      "balanced_accuracy": 0.588,
+      "ai_likely_ai": 0.0556,
       "real_likely_ai": 0.0,
       "n_ai": 108,
       "n_real": 540,
-      "gain_vs_static": 0.0019,
+      "gain_vs_static": -0.0019,
       "gain_ci95": [
-        -0.0065,
-        0.0111
+        -0.0074,
+        0.0028
       ]
     },
     "dynamic: compression+scale": {
-      "auc": 0.6944,
-      "tpr": 0.4722,
-      "fpr": 0.0944,
-      "balanced_accuracy": 0.6889,
-      "ai_likely_ai": 0.0741,
+      "auc": 0.5585,
+      "tpr": 0.2407,
+      "fpr": 0.0741,
+      "balanced_accuracy": 0.5833,
+      "ai_likely_ai": 0.0278,
       "real_likely_ai": 0.0,
       "n_ai": 108,
       "n_real": 540,
-      "gain_vs_static": 0.0065,
+      "gain_vs_static": -0.0065,
       "gain_ci95": [
-        -0.0009,
-        0.0157
+        -0.0222,
+        0.012
       ]
     }
   },
@@ -133,16 +81,16 @@
       "brick",
       "camera",
       "chelsea",
+      "china",
       "coins",
+      "flower",
+      "grace_hopper",
       "grass",
       "gravel",
       "moon",
       "motorcycle_left",
       "motorcycle_right",
-      "rocket",
-      "china",
-      "flower",
-      "grace_hopper"
+      "rocket"
     ]
   },
   "variants": 648

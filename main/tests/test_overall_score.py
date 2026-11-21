@@ -144,9 +144,12 @@ class TestSpecification:
 
 # =========================================================================== #
 # 1. Realistic archetypes
-#    Signal values are the ones measured on the baseline files and controls
-#    (see eval/REPORT.md and the README). Each scenario pins the verdict
-#    and, under static weights, the exact value.
+#    Signal values were measured on an earlier set of baseline files and on
+#    controls (the file names in the ids below refer to those earlier
+#    pictures, which have been replaced; the current baseline pictures are
+#    not flagged, see the README). The scenarios feed fixed signal values to
+#    the combiner, so they are independent of the files now in baseline/.
+#    Each pins the verdict and, under static weights, the exact value.
 # =========================================================================== #
 ARCHETYPES = [
     # id, analysis kwargs, expected static value, expected verdict, why

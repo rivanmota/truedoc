@@ -971,7 +971,9 @@ class TestImagePathParity:
             assert page["score"] == _upload_score(allowed)
 
     def test_realistic_non_portrait_raster(self):
-        # Signals measured on fireplace-generated.png: the embedded raster
+        # Signals measured on an earlier fireplace-generated.png (since
+        # replaced; fixed values, so independent of the file now in
+        # baseline/): the embedded raster
         # gets the upload's 0.731 (static weights), where the old PDF
         # weights gave it 0.66.
         signals = {

@@ -273,7 +273,7 @@ With `details=false`, this is the whole response:
     "http_status": 200,
     "status": "completed",
     "thresholds": { "likely_real_below": 0.35, "likely_ai_above": 0.65 },
-    "final_score": 0.0543,
+    "final_score": 0.0652,
     "classification": "likely_real",
     "label": "Likely a true doc",
     "confidence": "low-medium",
@@ -295,8 +295,8 @@ signals):
     "duration_ms": 142,
     "engine": {
       "name": "truedoc-forensics", "version": "0.3.4",
-      "weighting": "dynamic: compression+scale",
-      "calibration_generated": "2026-11-20T19:35:23"
+      "weighting": "static",
+      "calibration_generated": "2026-11-20T20:41:00"
     },
     "file": {
       "source": "upload", "filename": "real-photo.jpeg", "url": null,
@@ -333,12 +333,12 @@ signals):
       "metadata":  { "…": "…" }
     },
     "scoring": {
-      "visual_score": 0.0543, "metadata_effect": "neutral",
+      "visual_score": 0.0652, "metadata_effect": "neutral",
       "applicable_signals": ["frequency", "lighting"],
       "insufficient_evidence": false, "single_signal_cap_applied": false,
       "gradients_weight_redistributed_to": ["frequency"],
-      "context_multipliers": { "frequency": 0.9929, "noise": 1.0118, "gradients": 1.0931, "lighting": 0.8324 },
-      "context_discount": 0.0217,
+      "context_multipliers": { "frequency": 1.0, "noise": 1.0, "gradients": 1.0, "lighting": 1.0 },
+      "context_discount": 0.0,
       "context": { "format": "jpeg", "jpeg_quality_estimate": 82, "…": "…" }
     }
   }
@@ -676,27 +676,32 @@ weights on held-out sources. The full numbers are in
 [`eval/REPORT.md`](eval/REPORT.md). Current state, from 3 generated and
 15 genuine sources (648 variants):
 
-- **Adopted: compression + scale factors.** For example, frequency gets
-  1.11x on lossless, 0.99x on JPEG q75-94 and 0.82x below q75; noise
-  0.88x under JPEG; gradients 0.88x on upscaled images, where upscaling
-  smooths genuine skin.
-- **It is not a measured improvement.** On held-out sources, balanced
-  accuracy is 68.9% vs 68.2% for static weights (95% CI of the
-  difference -0.1 to +1.6 points), with a similar false-positive
-  rate (9.4% vs 9.8%). It was adopted because it's non-inferior and the factors follow
-  the physics, not because it wins.
+- **Result: static weights kept.** No dynamic candidate (compression,
+  scale, or both) was non-inferior on held-out sources without raising
+  the false-positive rate, so `app/weighting_calibration.json` records
+  static weights (no multipliers). Earlier baseline images produced a
+  dynamic compression + scale fit; it does not survive the current ones.
+- **The detector barely separates the two sets.** On held-out sources
+  AUC is 0.55 and balanced accuracy 59.0% at the 0.35 cut-off: 27.8% of
+  generated variants are flagged against 9.8% of genuine ones. The
+  previous baseline pictures gave 68.9%, but they were replaced because
+  their provenance could not be documented. The current ones come from a
+  current generator that delivers JPEG, and none of the three originals is
+  flagged (scores 0.04-0.21); they are flagged only in some rescaled
+  variants (mostly upscaled 1.5x).
 - **Size and colour are not fitted.** In the available sources they're
   confounded with the label: the genuine library photos are small and
   partly grayscale, the generated ones ~1 MP colour, so megapixels alone
-  "detect" AI at AUC 0.80. Factors fitted on them would learn that.
+  "detect" AI at AUC 0.78. Factors fitted on them would learn that.
   Adding large colour genuine photos (`--real-dir`) fixes this
   automatically.
-- **Which signal indicates AI is deliberately not learned.** Each of the
-  three generated sources is caught by a different signal. Any model
-  that learned it (tried: likelihood-ratio weighting, a logistic
-  regression) inverted on the held-out generator; the regression fell
-  from AUC 0.81 in-sample to 0.05 held-out. Only degradation behaviour,
-  which transfers between generators, is fitted.
+- **Which signal indicates AI is deliberately not learned.** With a
+  handful of generators, each generator has its own tell. On the previous
+  baseline set, models that learned it (likelihood-ratio weighting, a
+  logistic regression) inverted on the held-out generator; the regression
+  fell from AUC 0.81 in-sample to 0.05 held-out. That experiment was not
+  repeated on the current set. Only degradation behaviour, which
+  transfers between generators, is fitted.
 - Along JPEG quality the fit is constrained so a signal never becomes
   *more* trustworthy as quality drops. Without that, sampling noise
   produced inverted factors (0.74x at q >= 90 but 1.31x at q75-89).
@@ -747,21 +752,25 @@ anything.
   physically motivated but hand-tuned, not fit to data. Expect a
   meaningfully higher false-positive/false-negative rate, especially
   on borderline cases.
+- **Output from a current image generator is mostly missed.** The three
+  generated or retouched pictures in `../baseline/` were made with a
+  current generator, which delivers JPEG (so there is no lossless grain
+  for `noise` to read) and no airbrushing the `gradients` signal catches.
+  None of them is flagged: they score 0.04-0.21 against the 0.35 "likely
+  real" cut-off. A low score means "no synthetic tell found", not "this is
+  authentic". The tests pin these three as known misses, so the day one is
+  flagged the suite points at the docs to update.
 - **JPEG re-compression, resizing, and screenshots remove evidence.**
   They don't manufacture it: compression makes `noise` step aside
   rather than read "too clean" as AI. But once the evidence is gone,
-  nothing can recover it. Measured on the baseline set: a generated
-  portrait re-saved as JPEG still scores ~0.55 (skin/backdrop texture
-  survives), and the fireplace scene ~0.60 (the frequency knee
-  survives), but `ai-retouched.png` re-saved as JPEG drops to ~0.07 and
-  the fireplace downscaled by half to ~0.02. Across the whole synthetic
-  degradation batch (`eval/REPORT.md`) the generated portrait is flagged
-  in 92% of its variants, but the fireplace and the retouched photo in
-  only 22-25%; genuine photos are flagged in 9% of theirs, mostly
-  upscaled ones.
+  nothing can recover it. Across the synthetic degradation batch
+  (`eval/REPORT.md`) the generated portrait is flagged in 64% of its
+  variants (mostly rescaled ones; the untouched file is not flagged), the
+  fireplace in 6% and the retouched photo in 14%, while genuine photos
+  are flagged in 10% of theirs, mostly upscaled ones.
 - **Known false positives.** Film scans and some high-ISO photos carry
   stationary, white grain that `noise` can't tell from synthetic grain
-  (skimage's `astronaut.png`, a scanned NASA portrait, scores ~0.50).
+  (skimage's `astronaut.png`, a scanned NASA portrait, scores ~0.49).
   Real photos that were *upscaled* trip `frequency`: in the synthetic
   batch (`eval/REPORT.md`) genuine variants rescaled to 1.5x are flagged
   about a third of the time, and a 1.41x bicubic upscale of one genuine
@@ -813,19 +822,18 @@ anything.
 - **`lighting` is a genuinely weak signal** on its own; it's there as
   a minor corroborating factor, not evidence.
 - **Thresholds were set from a small set of measurements, not fit to a
-  labeled dataset.** They came from the three generated baseline images,
-  `real-photo.jpeg`, fifteen genuine photos bundled with
-  scikit-image/scikit-learn/matplotlib (most non-portrait, several
-  lossless PNG so format can't stand in for authenticity), and
-  re-encoded/resized/upscaled variants of each. On that set every
-  generated baseline image scores 0.59-0.73 and every genuine photo
-  0.00-0.18, except `astronaut.png` above. Moving any individual
-  threshold by +/-20% changes none of those outcomes. That is far too
-  few generated images to claim a general accuracy: three images from
-  unknown generators can't represent the space. If you have real/AI
-  labeled images, the highest-value next step is to run a batch through
-  and adjust the constants at the top of each analyzer until the ROC
-  curve looks right for your use case.
+  labeled dataset.** They came from an earlier set of generated baseline
+  images (since replaced, see `../NOTICE`), `real-photo.jpeg`, fifteen
+  genuine photos bundled with scikit-image/scikit-learn/matplotlib (most
+  non-portrait, several lossless PNG so format can't stand in for
+  authenticity), and re-encoded/resized/upscaled variants of each. The
+  thresholds therefore do not transfer to the current baseline images:
+  none of the three is flagged, while genuine photos score 0.00-0.18
+  except `astronaut.png` (0.49). Three images from unknown generators
+  can't represent the space, and that number is now too small to claim any
+  general accuracy. If you have real/AI labeled images, the highest-value
+  next step is to run a batch through and adjust the constants at the top
+  of each analyzer until the ROC curve looks right for your use case.
 - **Adversarial robustness is not a goal here.** Anyone who knows
   these are the checks can add noise, blur, or re-compress to defeat
   them specifically.

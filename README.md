@@ -27,13 +27,20 @@ truedoc/
     cup (expected to score low on `ai_generated`). This is scikit-image's
     `coffee` sample, CC0 / public domain by Rachel Michetti, re-saved as
     a JPEG (quality 82, no metadata).
-  - `baseline/png/ai-generated.png` — a fully AI-generated image
-    (expected to score high).
+  - `baseline/png/ai-generated.png` — a fully AI-generated portrait of a
+    fictional person. **A known miss:** it scores below the "likely real"
+    cut-off (see "Limitations" in `main/README.md`).
   - `baseline/png/fireplace-generated.png` — a fully AI-generated
-    non-portrait scene (expected to score high; no face, so it is
-    scored by the noise and frequency signals).
-  - `baseline/png/ai-retouched.png` — a real photo with AI retouching
-    (expected to land in between).
+    non-portrait scene (no face, so it is scored by the noise and
+    frequency signals). Also a known miss.
+  - `baseline/png/ai-retouched.png` — the CC0 coffee photo above, edited
+    with an AI image tool. Also a known miss.
+
+  The three generated/retouched pictures were made on 2026-11-20 with
+  Cursor's built-in image generation tool, from text prompts (and, for the
+  retouched one, the CC0 photo as reference). They show no real person and
+  were saved as PNG from the tool's JPEG output. Details are in
+  [`NOTICE`](NOTICE).
   - `baseline/pdf/baseline_sample.pdf` — a plain, unremarkable PDF.
   - `baseline/pdf/anomaly_metadata_sample.pdf` — a PDF with suspicious
     document metadata, for exercising the document-anomaly checks.
@@ -119,8 +126,8 @@ npm test                             # UI logic tests (Node test runner)
 ```
 
 The backend suite includes checks against the files in `baseline/` (for
-example, the generated images must score above the "likely real" cut-off
-and the real photo below it). It runs fully offline and takes about a
+example, the real photo must score below the "likely real" cut-off, and the
+generated baseline pictures are pinned as known misses). It runs fully offline and takes about a
 minute.
 
 ## Offline use and network requirements
